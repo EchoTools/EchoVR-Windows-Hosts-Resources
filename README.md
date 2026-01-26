@@ -12,7 +12,11 @@ To set it up open the file and change the info as necessary in the `THINGS YOU H
 ### Usage
 You can quickly run the script by creating a batch file with the following line: `pwsh Echo-VR-Server-Error-Monitoring.ps1`
 
-If you'd like to hide the terminal window, put this in your batch file isntead: `start /min pwsh -windowstyle hidden -file new-monitor.ps1`
+If you'd like to hide the terminal window, put this in your batch file isntead: `start /min pwsh -windowstyle hidden -file Echo-VR-Server-Error-Monitoring.ps1`
+
+> [!NOTE]
+> Unless you input the entire filepath in your batch file, it will need to be in the same directory as the .ps1 script.
+> You should probably make a shortcut to the batch file and put it in the startup folder as well.
 
 Right-click the system tray icon to open the menu.
 
