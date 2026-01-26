@@ -50,7 +50,7 @@ $global:delay_for_exiting = 30 #seconds, this timer sets the time for the second
 $global:delay_for_process_checking = 3 #seconds Delay between each process check
 $global:verbose = $false # If set to true, the Jobs/Tasks Output will be visible
 $global:showPids = $false# If set to true, the PIDs will be shown
-$flags =  "-numtaskthreads 2 -server -headless -noovr -server -fixedtimestep -nosymbollookup  -timestep 120" # Flags/Parameters
+$flags =  "-numtaskthreads 2 -server -headless -noovr -fixedtimestep -nosymbollookup -timestep 120" # Flags/Parameters
 $disableEditMode = $true #if true the edit mode inside the CLI will be deactivated, if $false it will be activated again (As the script will pause if you press on it when the EditMode is activated, you should use $true here)
 
 
@@ -361,4 +361,5 @@ sleep $delay_for_process_checking
 #added the possibility to add the amount of needed server instances behind the script like "pswhEcho-VR-Server-Error-Monitoring.ps1 5"
 #08.04.2024
 #added a function to check for stuck servers
+
 
