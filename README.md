@@ -3,7 +3,7 @@
 This script is made for checking of errors running on Echo VR Server Instances.
 It will automatically handle crashes/errors and auto-restart when necessary.
 
-To set it up open the file and change the info as necessary in the `THINGS YOU HAVE TO SET UP` section.
+Before you do anything, open the file and change the info as necessary in the `THINGS YOU HAVE TO SET UP` section.
 
 > [!TIP]
 > The script will install Powershell 7 for you. Just right click > Run With Powershell to get started.
