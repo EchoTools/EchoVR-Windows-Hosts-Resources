@@ -1,25 +1,24 @@
 ###################################################################
-#Code by marshmallow_mia
+#Code by marshmallow_mia (and berg_)
 #Checks for errors and restarts the server. Also checks for the right amount of servers running.
-#Do what you want with it, but I dont take any responsibility
-#Please contact me if you found bugs or for feature requests
+#Monitor now lives in the system tray! --berg
+#Please contact either of us if you found bugs or for feature requests
 #Sorry for weird german variable names at some points
 #Echo <3
 ###################################################################
-#CHANGELOG IS NOW AT THE END OF THE FILE
+param (
+    [Parameter(Mandatory=$false)]
+    [int]$Instances
+)
 
+####### THINGS YOU HAVE TO SET UP #######
+$processName = "echovr" # without the '.exe'
+$amountOfInstances = 2 # number of servers you want to run 
+$global:filepath = "C:\Program Files\Oculus\Software\Software\ready-at-dawn-echo-arena" # do not include \ at the end
+$region = "us-central-2";
+$global:delayForKillingIfStuck = 20 # time in minutes
 
-
-#######THINGS YOU HAVE TO SET UP!!!#######
-$processName = "echovr" #without .exe, this is the name of the echovr.exe (in most cases its just echovr)
-
-$amountOfInstances = 2 #number of instances you want to run (If you give this script an Input behind it, this will be overwritten! So like "Echo-VR-Server-Error-Monitoring.ps1 5" )
-
-$global:filepath = "C:\Users\Administrator\Desktop\ready-at-dawn-echo-arena" #the path to your echo-folder (No \ at the end!!!)
-
-$region = "euw";
-
-#Please use one of the following region codes after in $region
+# for $region, use one of the following:
 #  "uscn", // US Central North (Chicago)
 #  "us-central-2", // US Central South (Texas)
 #  "us-central-3", // US Central South (Texas)
@@ -29,308 +28,190 @@ $region = "euw";
 #  "jp", // Japan (idk)
 #  "sin", // Singapore oce region
 
-#SET THIS TO 0 TO DISABLE THE AUTO RESTART OF THE SERVER AFTER X MINUTES. ITS NEEDED AS SERVER CAN GET STUCK SOMETIMES
-$global:delayForKillingIfStuck = 20 #minutes after a server that doesnt change its state will be killed as it could be stuck
-
-
-
-if ( $args[0] )
-{
-    $amountOfInstances = $args[0]
-}
-
-
-
-#######THINGS YOU CAN BUT DONT NEED SET UP!!!#######
-#This are all known errors. If you add one, you might need to change the "check_for_errors" function
+####### ADDITIONAL SETTINGS #######
+# If you don't know what these do, you can leave them alone
 $global:errors = "Unable to find MiniDumpWriteDump", "[NETGAME] Service status request failed: 400 Bad Request", "[NETGAME] Service status request failed: 404 Not Found", "[TCP CLIENT] [R14NETCLIENT] connection to ws:///login", "[TCP CLIENT] [R14NETCLIENT] connection to failed", `
  "[TCP CLIENT] [R14NETCLIENT] connection to established", "[TCP CLIENT] [R14NETCLIENT] connection to restored", "[TCP CLIENT] [R14NETCLIENT] connection to closed", "[TCP CLIENT] [R14NETCLIENT] Lost connection (okay) to peer", "[NETGAME] Service status request failed: 502 Bad Gateway", `
  "[NETGAME] Service status request failed: 0 Unknown"
-$global:delay_for_exiting = 30 #seconds, this timer sets the time for the second error check.
-$global:delay_for_process_checking = 3 #seconds Delay between each process check
-$global:verbose = $false # If set to true, the Jobs/Tasks Output will be visible
-$global:showPids = $false# If set to true, the PIDs will be shown
-$flags =  "-numtaskthreads 2 -server -headless -noovr -fixedtimestep -nosymbollookup -timestep 120" # Flags/Parameters
-$disableEditMode = $true #if true the edit mode inside the CLI will be deactivated, if $false it will be activated again (As the script will pause if you press on it when the EditMode is activated, you should use $true here)
+$global:delay_for_exiting = 30 
+$global:delay_for_process_checking = 3 
+$flags =  "-numtaskthreads 2 -server -headless -noovr -server -fixedtimestep -nosymbollookup -timestep 120" 
 
-
-
-#DONT CHANGE OR I WILL VISIT YOU AT NIGHT!!!!
-$global:startedTime = ((get-date) - (gcim Win32_OperatingSystem).LastBootUpTime | Select TotalSeconds).TotalSeconds
-$global:path = "$filepath\bin\win10\$processName.exe" #Path of your echovr.exe
-$global:logpath = "$filepath\_local\r14logs"
-$global:checkRunningBool = $false # is set to true if the check_for_errors function is running
-$global:checkStuckBool = $false # is set to true if the vibWantsMeToForceARestartEveryXMinutes function is running
-$global:loop = $true# will stay on false if Powershell 7 isnt standard or not installed at all
-$global:PSversion = $PSVersionTable.PSVersion.Major
 
 
 
 
 #############################################################
-#This functions checks if enough instances are running. If not it will open enough and starts the error check for the processes
+# DON'T TOUCH ANYTHING BELOW OR WE'LL VISIT YOU AT NIGHT
+#############################################################
+
+if ($Instances) { $amountOfInstances = $Instances }
+
+# Global State
+$global:startedTime = ((get-date) - (gcim Win32_OperatingSystem).LastBootUpTime | Select TotalSeconds).TotalSeconds
+$global:path = "$filepath\bin\win10\$processName.exe" 
+$global:logpath = "$filepath\_local\r14logs"
+$global:checkRunningBool = $false 
+$global:checkStuckBool = $false 
+
 function check_for_amount_instances($amount, $path, $processName, $flags){
-    $echovrProcesses = Get-Process -Name $processName 
-    # If there are less than $amount echovr.exe processes running, start a new one
-    #if not enough start, else check for errors
+    $echovrProcesses = Get-Process -Name $processName -ErrorAction SilentlyContinue
     if ($echovrProcesses.Count -lt $amountOfInstances) {
         while ($echovrProcesses.Count -lt $amountOfInstances) {
-            # create the \old folder
-            New-Item -Path $logpath"\old" -ItemType Directory *> $null
-            #move old logfiles
-            Move-Item -Path $logpath"\*.log" -Destination $logpath"\old\" *> $null
-            #start the processes
-            Start-Process -FilePath  $path  $flags -PassThru *> $null
-            $echovrProcesses = Get-Process -Name $processName
-            
+            New-Item -Path $logpath"\old" -ItemType Directory -Force *> $null
+            Move-Item -Path $logpath"\*.log" -Destination $logpath"\old\" -ErrorAction SilentlyContinue *> $null
+            Start-Process -FilePath $path $flags -PassThru *> $null
+            $echovrProcesses = Get-Process -Name $processName -ErrorAction SilentlyContinue
         }
-        #make sure the logs have been created
-        sleep 3
+        Start-Sleep -Seconds 3
     }
-    else
-    {
-            #if enough instances are running, check for error
-            if ($checkRunningBool -eq $false)
-            {
-                $global:checkRunningBool = $true
-                check_for_errors
-            }
-
-            if ( $delayForKillingIfStuck -ne 0){
-                if ($checkStuckBool -eq $false)
-                {
-                    $global:checkStuckBool = $true
-                    vibWantsMeToForceARestartEveryXMinutes
-                }  
-            }
+    else {
+        if ($checkRunningBool -eq $false) {
+            $global:checkRunningBool = $true
+            check_for_errors
+        }
+        if ($delayForKillingIfStuck -ne 0 -and $checkStuckBool -eq $false) {
+            $global:checkStuckBool = $true
+            vibWantsMeToForceARestartEveryXMinutes
+        }
     }
 }
 
-
-
-#This function checks the logs for errors specified in the $errors array
 function check_for_errors(){
-    #loop through every running echo PID
-    Get-Process -Name $processName | ForEach-Object {
-        #check if the PID already is in check by a running job
+    Get-Process -Name $processName -ErrorAction SilentlyContinue | ForEach-Object {
         $job = Get-Job -Name $_.ID -ErrorAction SilentlyContinue 
-        if ( $job -eq $null ) {
-            $pfad_logs = $logpath+"\*_" + $_.ID + ".log" #the path of the specified logfile
-            $lastLineFromFile =  Get-Content -Path $pfad_logs -Tail 1
-                # delete the first X charachters (the datetime) and delete IP:Port, will probably need to remove more for new found errors
+        if ($null -eq $job) {
+            $pfad_logs = $logpath+"\*_" + $_.ID + ".log"
+            if (Test-Path $pfad_logs) {
+                $lastLineFromFile = Get-Content -Path $pfad_logs -Tail 1
                 $line_clean = $lastLineFromFile.Substring(25) -replace "[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*", "" -replace "ws://.* ", "" -replace " ws://.*api_key=.*",""  -replace "\?auth=.*", ""
-                #if one of the errors in our "error" array contains the content of the last logged line   
-                if ( $errors -contains $line_clean ){
-                    #echo $error" = "$line_clean
-                    #start a new task for the check if the error will stay. That way the loop doesnt need to interrupt like with sleep
+                if ($errors -contains $line_clean) {
                     Start-Job -ScriptBlock $Function:check_for_error_consistency -Name $_.ID -ArgumentList $line_clean, $_.ID, $errors, $delay_for_exiting, $logpath 
                 }
-                
-  
+            }
         }
     }
     $global:checkRunningBool = $false
 }
 
-
-
-
-#function to check if the specified error is still present after $errorDelayCheckTime
 function check_for_error_consistency($line_clean, $ID, $errors, $delay_for_exiting, $logpath){
-    $errorindex = -1 #probably not needed to set here, but to get sure i set out outside the for below
     Start-Sleep -Seconds $delay_for_exiting
-    #get the index of the specified error, to check if we got the same error and not just an random error from the array
-    $check = $true
-    for ($a = 0; $check -eq $true; $a++){
-        # if the index content is the previous error, save the indexno and stop the for loop
-        if ($errors[$a] -contains $line_clean){
-            $errorindex = $a
-            $check = $false
-        }
-        #if this happens, i am stupid D: (Okay, I am also if it doesnt...)
-        if ( $a -gt $errors.count ){
-            Write-Host "Unknown Problem in check_for_error_consistency. Contact marcel_One_"
-            break;
-        }
-    
+    $pfad_logs = $logpath+"\*_" + $ID + ".log"
+    $lastLineFromFile = Get-Content -Path $pfad_logs -Tail 1
+    $line_clean_now = $lastLineFromFile.Substring(25) -replace "[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*", "" -replace "ws://.* ", "" -replace " ws://.*api_key=.*",""  -replace "\?auth=.*", ""
+    if ($errors -contains $line_clean_now) {
+        Stop-Process -Id $ID -Force
     }
-    $pfad_logs = $logpath+"\*_" + $ID + ".log" #the path of the specified logfile
-    $lastLineFromFile =  Get-Content -Path $pfad_logs -Tail 1
-    #delete the first X charachters (the datetime) and delete IP:Port, will probably need to remove more for new found errors
-    $line_clean = $lastLineFromFile.Substring(25) -replace "[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*", "" -replace "ws://.* ", "" -replace " ws://.*api_key=.*",""  -replace "\?auth=.*", ""
-    #if one of the errors in out error array contains the content of the last logged line kill the process, else add the PID back as an output
-    if ( $errors[$errorindex] -contains $line_clean ){
-        taskkill /F /PID $ID
-    }
-    else{
-        Write-Output "addPID.$ID"
-    }
-        
 }
 
-
-#function to check the output, echo the output and react on the dependent output if needed
 function check_every_output_of_jobs(){
-    $IDofJobs = Get-Job -State Completed | Where-Object -Property HasMoreData -eq $true | Select Id
-    foreach ($job in $IDofJobs){     
-        $result = Receive-Job -Id $job.Id -Wait -AutoRemoveJob
-        #If verbose is active output everything from the jobs
-        if ($verbose -eq $true){
-            echo $result 
-        }
+    Get-Job -State Completed | ForEach-Object {
+        Receive-Job -Job $_ -Wait -AutoRemoveJob *> $null
     }
 }
 
-
-
-#This function starts a job to check if the server is stuck with the same notification for X Minutes
 function vibWantsMeToForceARestartEveryXMinutes(){
-    #loop through every running echo PID
-    #Start the Job for each running process, if no is running already
-    Get-Process -Name $processName | ForEach-Object {
-        #check if the PID already is in check by a running job
+    Get-Process -Name $processName -ErrorAction SilentlyContinue | ForEach-Object {
         $job = Get-Job -Name ($_.ID.ToString() + "_stuck") -ErrorAction SilentlyContinue 
-        if ( $job -eq $null ) {
-            $pfad_logs = $logpath+"\*_" + $_.ID + ".log" #the path of the specified logfile
-            
-            $lastLineFromFile = Get-Content -Path $pfad_logs -Tail 1
-            #start a new task for the check for X min if there is no change and the server got stuck. It kills the process, if it is ruck
-            Start-Job -ScriptBlock $Function:checkForStuckServer -Name ($_.ID.ToString() + "_stuck") -ArgumentList $lastLineFromFile, $_.ID, $delayForKillingIfStuck, $logpath 
+        if ($null -eq $job) {
+            $pfad_logs = $logpath+"\*_" + $_.ID + ".log"
+            if (Test-Path $pfad_logs) {
+                $lastLineFromFile = Get-Content -Path $pfad_logs -Tail 1
+                Start-Job -ScriptBlock $Function:checkForStuckServer -Name ($_.ID.ToString() + "_stuck") -ArgumentList $lastLineFromFile, $_.ID, $delayForKillingIfStuck, $logpath 
+            }
         }
     }
     $global:checkStuckBool = $false
 }
 
-
-
-#This function checks if the server is stuck with the same notification for X Minutes
 function checkForStuckServer($lineToCheck, $ID, $delayForKillingIfStuck, $logpath){
     $startTimeOfJob = (Get-Uptime).TotalSeconds
-
-    $pfad_logs = $logpath+"\*_" + $ID + ".log" #the path of the specified logfile
-    $stillChecking = $true
-    
-    while($stillChecking -eq $true){
-        if( $((Get-Uptime).TotalSeconds) -gt $($startTimeOfJob+($delayForKillingIfStuck*60))){
-            taskkill /F /PID $ID
-            $stillChecking = $false
+    $pfad_logs = $logpath+"\*_" + $ID + ".log"
+    while($true){
+        if (((Get-Uptime).TotalSeconds) -gt ($startTimeOfJob + ($delayForKillingIfStuck * 60))){
+            Stop-Process -Id $ID -Force
+            break
         }
-      
         $lastLineFromFile = Get-Content -Path $pfad_logs -Tail 1
-        echo $lineToCheck
-        echo $lastLineFromFile
-        if ( $lineToCheck -ne $lastLineFromFile ){
-            $stillChecking = $false
-        }
-        Start-Sleep -Seconds 2
-    }
-
-
-}
-
-
-
-
-function install_winget(){
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main" -Name "DisableFirstRunCustomize" -Value 2
-    $Uri = 'https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/'
-    $Results = Invoke-WebRequest -Method Get -Uri $Uri -MaximumRedirection 0 -ErrorAction SilentlyContinue -UseBasicParsing
-    Invoke-WebRequest -Uri $Results.Headers.Location -OutFile ~\Microsoft.UI.Xaml.zip -UseBasicParsing
-    Expand-Archive -Path  ~\Microsoft.UI.Xaml.zip -DestinationPath '~\microsoft.ui.xaml' -Force
-    Add-AppxPackage -Path "~\microsoft.ui.xaml\tools\AppX\x64\Release\Microsoft.UI.Xaml*.appx"
-    Invoke-WebRequest -Uri "https://download.microsoft.com/download/4/7/c/47c6134b-d61f-4024-83bd-b9c9ea951c25/Microsoft.VCLibs.x64.14.00.Desktop.appx" -OutFile ~\Microsoft.VCLibs.140.00.appx -UseBasicParsing
-    Add-AppxPackage ~\Microsoft.VCLibs.140.00.appx
-
-
-    # get latest download url
-    $URL = "https://api.github.com/repos/microsoft/winget-cli/releases/latest"
-    $URL = (Invoke-WebRequest -Uri $URL -UseBasicParsing ).Content | ConvertFrom-Json |
-            Select-Object -ExpandProperty "assets" |
-            Where-Object "browser_download_url" -Match '.msixbundle' |
-            Select-Object -ExpandProperty "browser_download_url"
-
-    # download
-    Invoke-WebRequest -Uri $URL -OutFile "Setup.msix" -UseBasicParsing
-    Invoke-WebRequest -Uri https://github.com/microsoft/winget-cli/releases/download/v1.7.3172-preview/34f5f38e82aa4e7ab15e617c6974e40e_License1.xml -Outfile .\34f5f38e82aa4e7ab15e617c6974e40e_License1.xml -UseBasicParsing
-
-    # install
-    Add-AppxPackage -Path "Setup.msix"
-    Add-AppxProvisionedPackage -Online -PackagePath Setup.msix -LicensePath .\34f5f38e82aa4e7ab15e617c6974e40e_License1.xml -Verbose
-
-    # delete file
-    Remove-Item "Setup.msix"
-
-}
-
-
-
-
-
-
-function install_powershell7(){
-    echo "Powershell 7 is not installed. We will install it and its dependencys in 5 seconds."
-    echo  "Please make sure to run this script with Administartor right, if it closes without installing"
-    sleep 5
-    install_winget
-    winget install --id Microsoft.Powershell --source winget 
-    echo "done"
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") 
-}
-
-pwsh --version
-function check_ps7_install_state(){
-    $Error.Clear()
-    try {$null = pwsh --version}
-    catch {
-        install_powershell7
+        if ($lineToCheck -ne $lastLineFromFile) { break }
+        Start-Sleep -Seconds 5
     }
 }
 
+#############################################################
+# TRAY UI SETUP, DON'T TOUCH THIS
+#############################################################
 
-function check_ps_version(){
-    if ($host.Version.Major -ne 7)
-    {
-        start pwsh $PSCommandPath  
-        exit       
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+Write-Host "Server monitor is running; see system tray for details."
+
+# Automatically hide the starting console
+$showWindowAsync = Add-Type -MemberDefinition @"
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+"@ -Name "Win32ShowWindowAsync" -Namespace Win32Functions -PassThru
+$showWindowAsync::ShowWindowAsync((Get-Process -Id $PID).MainWindowHandle, 0) | Out-Null
+
+$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+# Attempt to use the Echo icon, fallback to a system icon if path is invalid
+try { $notifyIcon.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($global:path) }
+catch { $notifyIcon.Icon = [System.Drawing.SystemIcons]::Application }
+
+$notifyIcon.Text = "Echo VR Monitor"
+$notifyIcon.Visible = $true
+
+$contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$notifyIcon.ContextMenuStrip = $contextMenu
+
+function Update-TrayMenu {
+    $contextMenu.Items.Clear()
+    $header = $contextMenu.Items.Add("Echo VR Status ($amountOfInstances instances)")
+    $header.Enabled = $false
+    [void]$contextMenu.Items.Add("-")
+
+    $processes = Get-Process -Name $processName -ErrorAction SilentlyContinue
+    if ($processes) {
+        foreach ($proc in $processes) {
+            $uptime = (Get-Date) - $proc.StartTime
+            $uptimeStr = "{0:d2}h {1:d2}m {2:d2}s" -f [int]$uptime.TotalHours, $uptime.Minutes, $uptime.Seconds
+            [void]$contextMenu.Items.Add("PID: $($proc.Id) | Up: $uptimeStr")
+        }
+    } else {
+        [void]$contextMenu.Items.Add("Checking servers...")
     }
-}
 
-#If activated this function disables the Edit Mode, so the Script will not be interrupted with an left mouseclick (It is stupid, thats it is activated at all.) If you want to pause for some reason, press the pause button
-function deactivateEditMode() {
-    $Value
-   if ($disableEditMode -eq $true){
-        $Value = '0'
-   }
-   else{
-        $Value = '1'
-   }
-   
-        # Set variables to indicate value and key to set
-        $RegistryPath = 'HKCU:\Console\C:_Program Files_PowerShell_7_pwsh.exe'
-        $Name         = 'QuickEdit'
-        # Create the key if it does not exist
-        if ( get-itempropertyvalue -path $RegistryPath -name $Name *> $null ){
-            Set-ItemProperty -Path $RegistryPath -Type DWord -Name $Name -Value $Value
-        }else{
-            New-Item $RegistryPath -Force | New-ItemProperty -Type DWord -Name $Name -Value $Value -Force | Out-Null *> $null
-        }
-}
-
-
-deactivateEditMode
-check_ps7_install_state
-check_ps_version
-echo $flags
-while ($loop -eq $true) {
-        check_for_amount_instances $amountOfInstances $path $processName $flags
-        check_every_output_of_jobs
-        if ($showPids -eq $true){        
-            echo $PIDS
-        }
-sleep $delay_for_process_checking
+    [void]$contextMenu.Items.Add("-")
     
-} 
+    # NEW: Open Logs Folder
+    $logItem = $contextMenu.Items.Add("Open Logs Folder")
+    $logItem.Add_Click({
+        explorer.exe $global:logpath
+    })
 
+    $exitItem = $contextMenu.Items.Add("Exit Monitor")
+    $exitItem.Add_Click({
+        $notifyIcon.Visible = $false
+        Stop-Process -Id $PID
+    })
+}
+
+# --- Main Runtime ---
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = ($global:delay_for_process_checking * 1000)
+$timer.Add_Tick({
+    check_for_amount_instances $amountOfInstances $path $processName $flags
+    check_every_output_of_jobs
+    Update-TrayMenu
+})
+
+$timer.Start() | Out-Null
+
+$form = New-Object System.Windows.Forms.Form
+$form.ShowInTaskbar = $false
+$form.WindowState = "Minimized"
+[System.Windows.Forms.Application]::Run($form) | Out-Null
 
 #21.11.2023 added:
 #[TCP CLIENT] [R14NETCLIENT] connection to ws:///login?auth failed
@@ -361,5 +242,5 @@ sleep $delay_for_process_checking
 #added the possibility to add the amount of needed server instances behind the script like "pswhEcho-VR-Server-Error-Monitoring.ps1 5"
 #08.04.2024
 #added a function to check for stuck servers
-
-
+#26.01.2026
+#moved all user-facing outputs to the system tray menu (berg)
