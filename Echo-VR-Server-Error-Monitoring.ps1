@@ -15,18 +15,6 @@ param (
 ####### THINGS YOU HAVE TO SET UP #######
 $amountOfInstances = 2 # number of game servers you want to run
 $global:filepath = "C:\Program Files\Oculus\Software\Software\ready-at-dawn-echo-arena" # path to the main echo directory, without the \ at the end
-$region = "us-central-2"; # see below for region IDs
-$global:delayForKillingIfStuck = 20 # time in minutes before a stuck server will restart
-
-# for $region, use one of the following:
-#  "uscn", // US Central North (Chicago)
-#  "us-central-2", // US Central South (Texas)
-#  "us-central-3", // US Central South (Texas)
-#  "use", // US East (Virgina)
-#  "usw", // US West (California)
-#  "euw", // EU West 
-#  "jp", // Japan (idk)
-#  "sin", // Singapore oce region
 
 ####### ADDITIONAL SETTINGS #######
 # If you don't know what's going on here, just leave it as-is.
@@ -37,6 +25,7 @@ $global:delay_for_exiting = 30
 $global:delay_for_process_checking = 3 
 $flags =  "-numtaskthreads 2 -server -headless -noovr -server -fixedtimestep -nosymbollookup -timestep 120" 
 $processName = "echovr"
+$global:delayForKillingIfStuck = 10
 
 
 
@@ -263,4 +252,5 @@ $form.WindowState = "Minimized"
 #added a function to check for stuck servers
 #26.01.2026
 #moved all user-facing outputs to the system tray menu (berg)
-
+#30.01.2026
+#removed $region stuff as it wasn't being used anywhere
