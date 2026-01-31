@@ -6,9 +6,9 @@ It will automatically handle crashes/errors and auto-restart when necessary.
 Before you do anything, open the file and change the info as necessary in the `THINGS YOU HAVE TO SET UP` section.
 
 > [!TIP]
+> Before starting, allow script execution by running `Set-ExecutionPolicy Bypass` in an admin terminal.
+> 
 > The script will install Powershell 7 for you. Just right click > Run With Powershell to get started.
->
-> You may also need to allow script execution by running `Set-ExecutionPolicy Bypass` in an admin terminal.
 
 ### Usage
 You can quickly run the script by creating a batch file with the following line: `pwsh Echo-VR-Server-Error-Monitoring.ps1`
