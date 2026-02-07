@@ -13,9 +13,11 @@ Before you do anything, open the file and change the info as necessary in the `T
 > The script will install Powershell 7 for you. Just right click > Run With Powershell to get started.
 
 ### Usage
-You can quickly run the script by creating a batch file with the following line: `pwsh Echo-VR-Server-Error-Monitoring.ps1`
+You can quickly run the script by creating a batch file with the following line: 
+<br>`pwsh Echo-VR-Server-Error-Monitoring.ps1`
 
-If you'd like to hide the terminal window, put this in your batch file isntead: `start /min pwsh -windowstyle hidden -file Echo-VR-Server-Error-Monitoring.ps1`
+If you'd like to hide the terminal window, put this in your batch file instead: 
+<br>`start /min pwsh -windowstyle hidden -file Echo-VR-Server-Error-Monitoring.ps1`
 
 > [!NOTE]
 > Unless you input the entire filepath in your batch file, it will need to be in the same directory as the .ps1 script.
