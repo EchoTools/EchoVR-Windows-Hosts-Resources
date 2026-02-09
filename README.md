@@ -14,9 +14,6 @@ Before you do anything, open the file and change the info as necessary in the `T
 
 ### Usage
 You can quickly run the script by creating a batch file with the following line: 
-<br>`pwsh Echo-VR-Server-Error-Monitoring.ps1`
-
-If you'd like to hide the terminal window, put this in your batch file instead: 
 <br>`start /min pwsh -windowstyle hidden -file Echo-VR-Server-Error-Monitoring.ps1`
 
 > [!NOTE]
