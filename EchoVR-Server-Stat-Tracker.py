@@ -18,7 +18,7 @@ import tkinter.messagebox as msgbox
 import matplotlib.gridspec as gridspec
 
 # --- Configuration & Constants ---
-CURRENT_VERSION = "2.1.0"
+CURRENT_VERSION = "2.1.1"
 CTK_THEME = "dark-blue"
 REPO_OWNER = "EchoTools"
 REPO_NAME = "EchoVR-Windows-Hosts-Resources"
