@@ -5,14 +5,14 @@
 ###################################################################
 
 # Changes 
-# v1.1.1 - Added Restore Defaults button, single link code enforcement, Discord redirect on link code, slightly increased spawn delay.
-# v1.1.0 - Removed PS7 dialogue (auto install). Added pause spawning option, instance uptime tracking, unlinked session detection.
-# v1.0.0 - Initial general release
+# v2.0.0 - Added Stat Tracker integration. Moved Startup/AutoUpdate options to Config GUI.
+# v1.1.1 - Added Restore Defaults button, single link code enforcement, Discord redirect on link code.
+# v1.1.0 - Removed PS7 dialogue. Added pause spawning option, uptime tracking, unlinked session detection.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "1.1.1"
+$Global:Version = "2.0.0"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 $Global:NotifiedPids = @{}
@@ -39,12 +39,11 @@ if ($ProcessName -eq "pwsh" -or $ProcessName -eq "powershell" -or $ProcessName -
 # If running as a script (not compiled), ensure PowerShell 7 is present
 if (-not $Global:IsBinary -and $PSVersionTable.PSVersion.Major -lt 7) {
         try {
-            # Attempt to install via Winget
             Start-Process -FilePath "winget" -ArgumentList "install --id Microsoft.PowerShell --source winget" -Wait -Verb RunAs
             [System.Windows.Forms.MessageBox]::Show("PowerShell 7 installed. Please restart this script using PowerShell 7 (pwsh).", "Install Complete", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             Exit
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Could not launch Winget. Please install PowerShell 7 manually from https://github.com/PowerShell/PowerShell", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            [System.Windows.Forms.MessageBox]::Show("Could not launch Winget. Please install PowerShell 7 manually.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             Exit
     }
 }
@@ -62,7 +61,6 @@ if (-not $mutex.WaitOne(0, $false)) {
 
 $ScriptRoot = $PSScriptRoot
 if (-not $ScriptRoot) { 
-    # Fallback for binary mode or if PSScriptRoot is empty
     $ScriptRoot = [System.IO.Path]::GetDirectoryName($Global:ExecutionPath) 
 }
 
@@ -74,6 +72,10 @@ $MonitorFile = Join-Path $DashboardDir "monitor.json"
 $NetConfigPath = Join-Path $ScriptRoot "sourcedb\rad15\json\r14\config\netconfig_dedicatedserver.json"
 $LocalConfigPath = Join-Path $ScriptRoot "_local\config.json"
 $LogPath = Join-Path $ScriptRoot "_local\r14logs"
+
+# Stat Tracker Filename determination
+$StatTrackerName = if ($Global:IsBinary) { "EchoVR-Server-Stat-Tracker.exe" } else { "EchoVR-Server-Stat-Tracker.py" }
+$StatTrackerPath = Join-Path $ScriptRoot $StatTrackerName
 
 # Known errors
 $Global:ErrorList = @(
@@ -98,7 +100,7 @@ $ShortcutPath = Join-Path $StartupFolder "EchoVR Server Monitor.lnk"
 # ==============================================================================
 
 if (-not (Test-Path $EchoExePath)) {
-    [System.Windows.Forms.MessageBox]::Show("Place this program in the root ready-at-dawn-echo-arena folder.", "Fatal Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    [System.Windows.Forms.MessageBox]::Show("Error: 'bin\win10\echovr.exe' not found.`nPlace this program in the root ready-at-dawn-echo-arena folder.", "Fatal Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     Exit
 }
 
@@ -173,7 +175,6 @@ Function Switch-StartupShortcut ($enable) {
             $WshShell = New-Object -ComObject WScript.Shell
             $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
             
-            # If binary, point to EXE. If script, point to pwsh executing the script
             if ($Global:IsBinary) {
                 $Shortcut.TargetPath = $Global:ExecutionPath
                 $Shortcut.WorkingDirectory = $ScriptRoot
@@ -209,7 +210,7 @@ Function Show-ConfigWindow {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Server Monitor Configuration"
-    $form.Size = New-Object System.Drawing.Size(435, 550)
+    $form.Size = New-Object System.Drawing.Size(435, 600)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -285,7 +286,7 @@ Function Show-ConfigWindow {
     $grpAdv = New-Object System.Windows.Forms.GroupBox
     $grpAdv.Text = "Advanced Settings"
     $grpAdv.Location = New-Object System.Drawing.Point(20, ($y + 25))
-    $grpAdv.Size = New-Object System.Drawing.Size(390, 180)
+    $grpAdv.Size = New-Object System.Drawing.Size(390, 150)
     $grpAdv.Enabled = $false
     $form.Controls.Add($grpAdv)
 
@@ -357,8 +358,26 @@ Function Show-ConfigWindow {
     $txtArgs.Text = "$($monitorData.additionalArgs)"
     $grpAdv.Controls.Add($txtArgs)
 
+    # --- New Config Options (Moved from Tray) ---
+    $y += 190
+
+    $chkStartup = New-Object System.Windows.Forms.CheckBox
+    $chkStartup.Text = "Start with Windows"
+    $chkStartup.Location = New-Object System.Drawing.Point(25, $y)
+    $chkStartup.AutoSize = $true
+    $chkStartup.Checked = (Test-Path $ShortcutPath)
+    $form.Controls.Add($chkStartup)
+
+    $y += 25
+    $chkAutoUpdate = New-Object System.Windows.Forms.CheckBox
+    $chkAutoUpdate.Text = "Enable Auto-Update"
+    $chkAutoUpdate.Location = New-Object System.Drawing.Point(25, $y)
+    $chkAutoUpdate.AutoSize = $true
+    $chkAutoUpdate.Checked = $monitorData.autoUpdate
+    $form.Controls.Add($chkAutoUpdate)
+
     # --- Bottom Buttons ---
-    $y += 220
+    $y += 35
     $btnOpenLocal = New-Object System.Windows.Forms.Button
     $btnOpenLocal.Text = "Open Server Config"
     $btnOpenLocal.Location = New-Object System.Drawing.Point(20, $y)
@@ -405,6 +424,8 @@ Function Show-ConfigWindow {
         $txtThreads.Text = "2"
         $rbStd.Checked = $true
         $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup"
+        $chkStartup.Checked = $true
+        $chkAutoUpdate.Checked = $true
     })
     $form.Controls.Add($btnRestore)
 
@@ -440,6 +461,10 @@ Function Show-ConfigWindow {
         $monitorData.numTaskThreads = [int]$txtThreads.Text
         $monitorData.timeStep = $tStep
         $monitorData.additionalArgs = $txtArgs.Text
+        $monitorData.autoUpdate = $chkAutoUpdate.Checked
+
+        # Handle Startup Shortcut immediately
+        Switch-StartupShortcut $chkStartup.Checked
 
         Save-MonitorConfig $monitorData
         Update-ExternalConfigs $numInst
@@ -449,7 +474,36 @@ Function Show-ConfigWindow {
 }
 
 # ==============================================================================
-# 5. SYSTEM TRAY & MENU
+# 5. STAT TRACKER LOGIC
+# ==============================================================================
+
+Function Get-StatTracker {
+    $url = "https://api.github.com/repos/$($Global:GithubOwner)/$($Global:GithubRepo)/releases/latest"
+    
+    try {
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
+        
+        $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop
+        $targetAsset = $response.assets | Where-Object { $_.name -eq $StatTrackerName } | Select-Object -First 1
+
+        if (-not $targetAsset) { 
+            [System.Windows.Forms.MessageBox]::Show("Could not find $StatTrackerName in the latest release.", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            return 
+        }
+
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $targetAsset.browser_download_url -OutFile $StatTrackerPath
+        
+        [System.Windows.Forms.MessageBox]::Show("Stat Tracker downloaded successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to download Stat Tracker: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } finally {
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+    }
+}
+
+# ==============================================================================
+# 6. SYSTEM TRAY & MENU
 # ==============================================================================
 
 $ContextMenuStrip = New-Object System.Windows.Forms.ContextMenuStrip
@@ -474,35 +528,31 @@ $MenuItemConfig.Add_Click({
 })
 $ContextMenuStrip.Items.Add($MenuItemConfig) | Out-Null
 
-# 4. AUTO-UPDATE
-$MenuItemAutoUpdate = New-Object System.Windows.Forms.ToolStripMenuItem
-$MenuItemAutoUpdate.Text = "Enable Auto-Update"
-$MenuItemAutoUpdate.CheckOnClick = $true
-$MenuItemAutoUpdate.Checked = $initialConfig.autoUpdate
-
-$MenuItemAutoUpdate.Add_Click({
-    $conf = Get-MonitorConfig
-    $conf.autoUpdate = $MenuItemAutoUpdate.Checked
-    Save-MonitorConfig $conf
+# 4. STAT TRACKER (Dynamic)
+$MenuItemStatTracker = New-Object System.Windows.Forms.ToolStripMenuItem
+$MenuItemStatTracker.Text = "Checking Stat Tracker..." # Placeholder
+$MenuItemStatTracker.Add_Click({
+    if (Test-Path $StatTrackerPath) {
+        # Launch Logic
+        try {
+            if ($Global:IsBinary) {
+                Start-Process -FilePath $StatTrackerPath
+            } else {
+                Start-Process -FilePath "python" -ArgumentList "`"$StatTrackerPath`""
+            }
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to launch Stat Tracker. Ensure Python is installed if using the script version.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    } else {
+        # Download Logic
+        Get-StatTracker
+    }
 })
-$ContextMenuStrip.Items.Add($MenuItemAutoUpdate) | Out-Null
-
-# 5. STARTUP SHORTCUT
-$MenuItemStartup = New-Object System.Windows.Forms.ToolStripMenuItem
-$MenuItemStartup.Text = "Start with Windows"
-$MenuItemStartup.CheckOnClick = $true
-
-Switch-StartupShortcut $true
-$MenuItemStartup.Checked = $true
-
-$MenuItemStartup.Add_Click({
-    Switch-StartupShortcut $MenuItemStartup.Checked
-})
-$ContextMenuStrip.Items.Add($MenuItemStartup) | Out-Null
+$ContextMenuStrip.Items.Add($MenuItemStatTracker) | Out-Null
 
 $ContextMenuStrip.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-# 6. PAUSE SPAWNING
+# 5. PAUSE SPAWNING
 $MenuItemPause = New-Object System.Windows.Forms.ToolStripMenuItem
 $MenuItemPause.Text = "Pause Server Spawning"
 $MenuItemPause.CheckOnClick = $true
@@ -520,7 +570,7 @@ $MenuItemPause.Add_Click({
 })
 $ContextMenuStrip.Items.Add($MenuItemPause) | Out-Null
 
-# 7. EXIT
+# 6. EXIT
 $MenuItemExit = New-Object System.Windows.Forms.ToolStripMenuItem
 $MenuItemExit.Text = "Exit"
 $MenuItemExit.Add_Click({
@@ -537,7 +587,7 @@ $NotifyIcon.ContextMenuStrip = $ContextMenuStrip
 $NotifyIcon.Visible = $true
 
 # ==============================================================================
-# 6. MONITORING LOGIC
+# 7. MONITORING LOGIC
 # ==============================================================================
 
 $MonitorTimer = New-Object System.Windows.Forms.Timer
@@ -653,6 +703,13 @@ $MonitorAction = {
     $config = Get-MonitorConfig
     $MonitorTimer.Interval = $config.delayProcessCheck
 
+    # Update Stat Tracker Menu Text dynamically
+    if (Test-Path $StatTrackerPath) {
+        $MenuItemStatTracker.Text = "Open Stat Tracker"
+    } else {
+        $MenuItemStatTracker.Text = "Download Stat Tracker"
+    }
+
     # Update Pause Menu Item based on config read
     if ($MenuItemPause.Checked -ne $config.pauseSpawning) {
         $MenuItemPause.Checked = $config.pauseSpawning
@@ -734,7 +791,7 @@ $MonitorAction = {
 $MonitorTimer.Add_Tick($MonitorAction)
 
 # ==============================================================================
-# 7. AUTO-UPDATE LOGIC
+# 8. AUTO-UPDATE LOGIC
 # ==============================================================================
 
 Function Test-ForUpdates {
@@ -804,7 +861,7 @@ del "%~f0"
 }
 
 # ==============================================================================
-# 8. EXECUTION
+# 9. EXECUTION
 # ==============================================================================
 
 # Check for updates synchronously before showing the tray
