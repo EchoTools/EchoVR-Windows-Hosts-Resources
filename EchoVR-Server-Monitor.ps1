@@ -528,7 +528,7 @@ winget install -e --id Python.Python.3.13 --silent --accept-package-agreements -
 Write-Host "Setting up Virtual Environment..." -ForegroundColor Cyan
 # Refresh env to find python if just installed
 `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-$Global:VenvPath = "$VenvPath"
+`$Global:VenvPath = "$VenvPath"
 
 if (Test-Path `$Global:VenvPath) { Remove-Item `$Global:VenvPath -Recurse -Force }
 python -m venv `$Global:VenvPath
@@ -927,4 +927,5 @@ del "%~f0"
 Test-ForUpdates
 
 $MonitorTimer.Start()
+
 [System.Windows.Forms.Application]::Run()
