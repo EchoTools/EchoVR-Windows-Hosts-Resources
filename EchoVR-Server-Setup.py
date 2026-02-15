@@ -1,5 +1,6 @@
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox
 import json
 import os
 import sys
@@ -10,6 +11,10 @@ import shutil
 import hashlib
 import threading
 import re
+
+# --- Theme Setup ---
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("dark-blue")
 
 # Filepaths
 ROOT_DIR = os.getcwd() 
@@ -31,11 +36,12 @@ MONITOR_SCRIPT = "EchoVR-Server-Monitor.ps1"
 HASH_DBGCORE = "fc75604280599d92576c75476a9ae894"
 HASH_PNSRAD = "707610f329b239651a994b35b139dc22"
 
-class EchoServerConfig(tk.Tk):
+class EchoServerConfig(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("EchoVR Server Setup Tool")
-        self.geometry("450x700") 
+        self.geometry("485x820") # Slightly larger for CTK padding
+        self.resizable(False, False)
         
         # State variables
         self.setup_data = {}
@@ -68,11 +74,13 @@ class EchoServerConfig(tk.Tk):
                 "isPatched": False,   
                 "isConfigured": False, 
                 "checkCGNAT": "Fail",  
+                "hasUnifi": False,
                 "numInstances": "",    
                 "upperPortRange": 6792,
                 "chklst_privateNet": False,
                 "chklst_staticIP": False,
                 "chklst_portFwd": False,
+                "chklst_unifiAllowP2P": False,
                 "chklst_usedNewConfig": False,
                 "chklst_hasMonitorScript": False
             }
@@ -82,6 +90,13 @@ class EchoServerConfig(tk.Tk):
     def load_setup(self):
         with open(SETUP_JSON, 'r') as f:
             self.setup_data = json.load(f)
+        
+        # Migration for existing users: Ensure new keys exist
+        if "hasUnifi" not in self.setup_data:
+            self.setup_data["hasUnifi"] = False
+        if "chklst_unifiAllowP2P" not in self.setup_data:
+            self.setup_data["chklst_unifiAllowP2P"] = False
+        self.save_setup()
 
     def save_setup(self):
         with open(SETUP_JSON, 'w') as f:
@@ -91,6 +106,9 @@ class EchoServerConfig(tk.Tk):
         if self.setup_data["filePath"] != ROOT_DIR:
             self.setup_data["filePath"] = ROOT_DIR
             self.save_setup()
+
+        # Check: Unifi Detection (Before CGNAT)
+        self.check_unifi()
 
         # Check: Auto-detect Monitor Script OR Exe on Startup
         path_exe = os.path.join(ROOT_DIR, MONITOR_EXE)
@@ -108,6 +126,28 @@ class EchoServerConfig(tk.Tk):
             threading.Thread(target=self.run_cgnat_check, daemon=True).start()
         else:
              self.is_cgnat = (self.setup_data["checkCGNAT"] == "Pass") 
+
+    def check_unifi(self):
+        """Runs tracert to detect if the gateway is a UniFi device."""
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            # Run tracert for just 1 hop
+            output = subprocess.check_output("tracert -h 1 1.1.1.1", 
+                                             startupinfo=startupinfo, 
+                                             shell=True).decode()
+            
+            if 'unifi' in output.lower():
+                self.setup_data["hasUnifi"] = True
+            else:
+                self.setup_data["hasUnifi"] = False
+            
+            self.save_setup()
+        except Exception:
+            # If check fails, assume False
+            self.setup_data["hasUnifi"] = False
+            self.save_setup()
 
     def run_cgnat_check(self):
         try:
@@ -169,76 +209,97 @@ class EchoServerConfig(tk.Tk):
     def build_main_menu(self):
         self.clear_window()
         
-        main_frame = tk.Frame(self, padx=20, pady=20)
-        main_frame.pack(fill="both", expand=True)
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Buttons
-        self.btn_patch = tk.Button(main_frame, text="Patch Server", command=self.action_patch_server, font=("Arial", 12), width=20)
+        self.btn_patch = ctk.CTkButton(main_frame, text="Patch Server", command=self.action_patch_server, font=("Arial", 14), width=200, height=40)
         self.btn_patch.pack(pady=10)
         self.update_patch_button() 
 
         config_text = "Config Ready" if self.setup_data["isConfigured"] else "Configure Server"
-        config_fg = "green" if self.setup_data["isConfigured"] else "black"
+        config_fg_color = "green" if self.setup_data["isConfigured"] else None # None uses theme default (blue)
         
-        self.btn_config = tk.Button(main_frame, text=config_text, fg=config_fg, command=self.action_configure_server, font=("Arial", 12), width=20)
+        self.btn_config = ctk.CTkButton(main_frame, text=config_text, fg_color=config_fg_color, command=self.action_configure_server, font=("Arial", 14), width=200, height=40)
         self.btn_config.pack(pady=10)
 
         # Checklist Area
-        self.checklist_frame = tk.LabelFrame(main_frame, text="Setup Checklist", padx=10, pady=10)
+        self.checklist_frame = ctk.CTkFrame(main_frame)
+        # We will pack this later in refresh_checklist if needed
+        
         self.refresh_checklist() 
 
         # "Ready to Launch" Message
+        # Check standard items + Unifi item if applicable
         checklist_keys = ["chklst_privateNet", "chklst_staticIP", "chklst_portFwd", "chklst_usedNewConfig", "chklst_hasMonitorScript"]
+        if self.setup_data.get("hasUnifi", False):
+            checklist_keys.append("chklst_unifiAllowP2P")
+
         all_checklist_complete = all(self.setup_data.get(k, False) for k in checklist_keys)
 
         if self.setup_data["isConfigured"] and self.setup_data["isPatched"] and all_checklist_complete:
             
-            lbl_ready = tk.Label(main_frame, text="Ready to Launch", font=("Arial", 16, "bold"), fg="green")
+            lbl_ready = ctk.CTkLabel(main_frame, text="Ready to Launch", font=("Arial", 20, "bold"), text_color="green")
             lbl_ready.pack(pady=(20, 5))
             
             # Launch Button
-            btn_launch = tk.Button(main_frame, text="Launch Server Monitor", 
+            btn_launch = ctk.CTkButton(main_frame, text="Launch Server Monitor", 
                                    command=self.action_launch_monitor, 
-                                   bg="green", fg="white", font=("Arial", 12))
+                                   fg_color="green", text_color="white", font=("Arial", 14), height=40)
             btn_launch.pack(pady=5)
 
-            lbl_instruct = tk.Label(main_frame, text="This will close the setup tool.", font=("Arial", 8), fg="gray")
+            lbl_instruct = ctk.CTkLabel(main_frame, text="This will close the setup tool.", font=("Arial", 10), text_color="gray")
             lbl_instruct.pack(pady=0)
 
     def update_patch_button(self):
         if self.patch_thread and self.patch_thread.is_alive():
-            self.btn_patch.config(text=self.patch_status_text, state="disabled")
+            self.btn_patch.configure(text=self.patch_status_text, state="disabled")
             return
 
         if self.setup_data["isPatched"]:
-            self.btn_patch.config(text="Server Patched", fg="green", state="normal")
+            self.btn_patch.configure(text="Server Patched", fg_color="green", state="normal")
         else:
-            self.btn_patch.config(text="Patch Server", fg="black", state="normal")
+            self.btn_patch.configure(text="Patch Server", fg_color=["#3B8ED0", "#1F6AA5"], state="normal") # Reset to default blue
 
     def refresh_checklist(self):
-        checklist_items = {
-            "chklst_privateNet": "1. Set Network Profile to Private",
-            "chklst_staticIP": "2. Create a Static LAN IP for This Machine",
-            "chklst_portFwd": f"3. Forward Ports 6792-{self.setup_data.get('upperPortRange', 6792)} to This Machine (TCP + UDP)",
-            "chklst_usedNewConfig": "4. Log In with New Client Config",
-            "chklst_hasMonitorScript": "5. Download Server Monitoring Script"
-        }
+        # Base Checklist
+        checklist_items_map = [
+            ("chklst_privateNet", "Set Network Profile to Private"),
+            ("chklst_staticIP", "Create a Static LAN IP for This Machine"),
+            ("chklst_portFwd", f"Forward Ports 6792-{self.setup_data.get('upperPortRange', 6792)} (TCP + UDP)")
+        ]
 
-        all_complete = all(self.setup_data.get(k, False) for k in checklist_items)
+        # Insert Unifi Item if applicable
+        if self.setup_data.get("hasUnifi", False):
+            checklist_items_map.append(("chklst_unifiAllowP2P", "Allow P2P traffic to reach your server"))
+
+        # Append remaining items
+        checklist_items_map.append(("chklst_usedNewConfig", "Log In with New Client Config"))
+        checklist_items_map.append(("chklst_hasMonitorScript", "Download Server Monitoring Script"))
+
+        all_complete = all(self.setup_data.get(k, False) for k, v in checklist_items_map)
+        
         if all_complete:
             self.checklist_frame.pack_forget()
             return
 
-        self.checklist_frame.pack(fill="x", pady=20)
+        self.checklist_frame.pack(fill="x", pady=20, padx=10)
+        
+        # Clear children
         for widget in self.checklist_frame.winfo_children():
             widget.destroy()
 
-        for key, label_text in checklist_items.items():
+        # Title for checklist frame (mimicking LabelFrame)
+        lbl_title = ctk.CTkLabel(self.checklist_frame, text="Setup Checklist", font=("Arial", 14, "bold"))
+        lbl_title.pack(anchor="w", padx=10, pady=(10,5))
+
+        for key, label_text in checklist_items_map:
             if not self.setup_data.get(key, False):
-                row = tk.Frame(self.checklist_frame)
-                row.pack(fill="x", pady=2)
-                lbl = tk.Label(row, text=label_text, anchor="w")
-                lbl.pack(side="left", fill="x", expand=True)
+                row = ctk.CTkFrame(self.checklist_frame, fg_color="transparent")
+                row.pack(fill="x", pady=2, padx=5)
+                
+                lbl = ctk.CTkLabel(row, text=label_text, anchor="w")
+                lbl.pack(side="left", fill="x", expand=True, padx=5)
                 
                 state = "normal"
                 
@@ -247,46 +308,50 @@ class EchoServerConfig(tk.Tk):
                 
                 if key == "chklst_usedNewConfig" and not self.setup_data["isConfigured"]:
                     state = "disabled"
+
+                if key == "chklst_unifiAllowP2P" and not self.setup_data["isConfigured"]:
+                     # Optional: Lock this until port forward logic is done? 
+                     # Instructions say "Add after port forward". 
+                     pass
                 
                 # Monitor script: Split Download buttons
                 if key == "chklst_hasMonitorScript":
-                    btn_dl_frame = tk.Frame(row)
+                    btn_dl_frame = ctk.CTkFrame(row, fg_color="transparent")
                     btn_dl_frame.pack(side="right")
                     
-                    tk.Button(btn_dl_frame, text="Download .exe", 
+                    ctk.CTkButton(btn_dl_frame, text="Download .exe", width=80,
                              command=lambda: self.download_monitor_file(MONITOR_EXE)).pack(side="left", padx=2)
                     
-                    tk.Button(btn_dl_frame, text="Download .ps1", 
+                    ctk.CTkButton(btn_dl_frame, text="Download .ps1", width=80,
                              command=lambda: self.download_monitor_file(MONITOR_SCRIPT)).pack(side="left", padx=2)
                 else:
-                    btn = tk.Button(row, text="Done", state=state, command=lambda k=key: self.complete_checklist_item(k))
-                    btn.pack(side="right")
+                    btn = ctk.CTkButton(row, text="Done", width=60, state=state, command=lambda k=key: self.complete_checklist_item(k))
+                    btn.pack(side="right", padx=5)
 
                 # --- Checklist Notes ---
+                note_text = ""
                 if key == "chklst_privateNet":
-                    note_lbl = tk.Label(self.checklist_frame, text="Settings > Network & Internet > Properties > Private Network",
-                                        font=("Arial", 8), fg="gray", anchor="w")
-                    note_lbl.pack(fill="x", padx=20)
+                    note_text = "Settings > Network & Internet > Properties > Private Network"
 
                 if key == "chklst_staticIP":
-                    note_lbl = tk.Label(self.checklist_frame, text="e.g., 192.168.1.100. Reconnect before continuing.",
-                                        font=("Arial", 8), fg="gray", anchor="w")
-                    note_lbl.pack(fill="x", padx=20)
+                    note_text = "e.g., 192.168.1.100. Reconnect before continuing."
                 
                 if key == "chklst_portFwd":
-                    note_lbl = tk.Label(self.checklist_frame, text="Complete your server configuration first.",
-                                        font=("Arial", 8), fg="gray", anchor="w")
-                    note_lbl.pack(fill="x", padx=20)
+                    note_text = "Complete your server configuration first."
+
+                if key == "chklst_unifiAllowP2P":
+                     note_text = "Ensure P2P traffic to your server is unblocked in the UniFi dashboard."
 
                 if key == "chklst_usedNewConfig":
-                    note_lbl = tk.Label(self.checklist_frame, text="Do not do this on your server machine.\nGet your new file in Config > Generate Client Config.",
-                                        font=("Arial", 8), fg="gray", anchor="w")
-                    note_lbl.pack(fill="x", padx=20)
+                    note_text = "Do this with the device you usually play on. (Config > Generate Client Config)"
                 
                 if key == "chklst_hasMonitorScript":
-                    note_lbl = tk.Label(self.checklist_frame, text="Downloads the Server Monitor to your echo folder.",
-                                        font=("Arial", 8), fg="gray", anchor="w")
-                    note_lbl.pack(fill="x", padx=20)
+                    note_text = "Downloads the Server Monitor to your echo folder."
+
+                if note_text:
+                    note_lbl = ctk.CTkLabel(self.checklist_frame, text=note_text,
+                                        font=("Arial", 11), text_color="gray", anchor="w")
+                    note_lbl.pack(fill="x", padx=30, pady=(0, 5))
 
     def complete_checklist_item(self, key):
         self.setup_data[key] = True
@@ -356,8 +421,6 @@ class EchoServerConfig(tk.Tk):
                 bat_filename = "Launch-Monitor.bat"
                 bat_path = os.path.join(ROOT_DIR, bat_filename)
                 
-                # Use the exact command string requested, referencing the script variable
-                # Note: We assume the script name on disk (MONITOR_SCRIPT) is the one we want to run
                 cmd_content = f"start /min pwsh -windowstyle hidden -file {MONITOR_SCRIPT}"
                 
                 with open(bat_path, "w") as f:
@@ -373,7 +436,7 @@ class EchoServerConfig(tk.Tk):
 
     def action_patch_server(self):
         # Disable button and start thread
-        self.btn_patch.config(state="disabled")
+        self.btn_patch.configure(state="disabled")
         self.patch_thread = threading.Thread(target=self.run_patch_sequence, daemon=True)
         self.patch_thread.start()
 
@@ -402,7 +465,7 @@ class EchoServerConfig(tk.Tk):
                  with zipfile.ZipFile(gunpatch_zip, 'r') as zip_ref:
                     zip_ref.extractall(ROOT_DIR)
 
-            # Step 2: Native Patch Logic (replaces patch.bat)
+            # Step 2: Native Patch Logic
             self.update_btn_text("Getting Ready...")
             
             # Paths mirroring the bat file
@@ -445,12 +508,11 @@ class EchoServerConfig(tk.Tk):
                 self.update_btn_text("Patching...")
                 
                 tool_path = os.path.join(ROOT_DIR, "evrFileTools.exe")
-                # Arguments from bat: -mode replace -packageName ...
                 args = [
                     tool_path,
                     "-mode", "replace",
                     "-packageName", "48037dc70b0ecab2",
-                    "-dataDir", path_orig + "\\",   # Add trailing slash as per bat usage usually
+                    "-dataDir", path_orig + "\\",   
                     "-inputDir", os.path.join(ROOT_DIR, "combatGunPatchFiles"),
                     "-outputDir", path_win10 + "\\",
                     "-ignoreOutputRestrictions"
@@ -490,7 +552,7 @@ class EchoServerConfig(tk.Tk):
 
         def _update():
             if hasattr(self, 'btn_patch') and self.btn_patch.winfo_exists():
-                self.btn_patch.config(text=text)
+                self.btn_patch.configure(text=text)
         
         self.after(0, _update)
 
@@ -543,59 +605,63 @@ class EchoServerConfig(tk.Tk):
                             args_val = "&" + "&".join(remaining_params)
                 except: pass
 
-        form_frame = tk.Frame(self, padx=20, pady=20)
-        form_frame.pack(fill="both", expand=True)
+        form_frame = ctk.CTkFrame(self)
+        form_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
         cgnat_status = self.setup_data.get("checkCGNAT", "Fail")
         if cgnat_status == "Pass":
-            lbl_cgnat = tk.Label(form_frame, text="No CGNAT Detected!", fg="green", font=("Arial", 10, "bold"))
+            lbl_cgnat = ctk.CTkLabel(form_frame, text="No CGNAT Detected!", text_color="green", font=("Arial", 14, "bold"))
         else:
-            lbl_cgnat = tk.Label(form_frame, text="CGNAT Detected. Use a tunnel service to host.", fg="red", font=("Arial", 10, "bold"))
+            lbl_cgnat = ctk.CTkLabel(form_frame, text="CGNAT Detected. Use a tunnel service to host.", text_color="red", font=("Arial", 14, "bold"))
         lbl_cgnat.pack(anchor="w", pady=(0, 10))
 
-        tk.Label(form_frame, text="Discord User ID (Required)").pack(anchor="w")
-        entry_discord = tk.Entry(form_frame, width=40)
+        ctk.CTkLabel(form_frame, text="Discord User ID (Required)").pack(anchor="w")
+        entry_discord = ctk.CTkEntry(form_frame, width=400)
         entry_discord.insert(0, discord_id)
         entry_discord.pack(anchor="w")
-        tk.Label(form_frame, text="NOT your username. Get your user ID by right clicking your profile > Copy User ID.", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="NOT your username. Get your user ID by right clicking your profile > Copy User ID.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        tk.Label(form_frame, text="Password (Required)").pack(anchor="w")
-        entry_pass = tk.Entry(form_frame, width=40)
+        ctk.CTkLabel(form_frame, text="Password (Required)").pack(anchor="w")
+        entry_pass = ctk.CTkEntry(form_frame, width=400)
         entry_pass.insert(0, password)
         entry_pass.pack(anchor="w")
-        tk.Label(form_frame, text="Do not use a password you typically use.", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Do not use a password you typically use.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        tk.Label(form_frame, text="Region ID").pack(anchor="w")
-        entry_region = tk.Entry(form_frame, width=40)
+        ctk.CTkLabel(form_frame, text="Region ID").pack(anchor="w")
+        entry_region = ctk.CTkEntry(form_frame, width=400)
         entry_region.insert(0, region_val)
         entry_region.pack(anchor="w")
-        tk.Label(form_frame, text="Leave blank unless otherwise instructed. Separate multiple IDs with commas.", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Leave blank unless otherwise instructed. Separate multiple IDs with commas.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        tk.Label(form_frame, text="Tunnel IP:Port").pack(anchor="w")
-        entry_cgnat = tk.Entry(form_frame, width=40)
+        ctk.CTkLabel(form_frame, text="Tunnel IP:Port").pack(anchor="w")
+        entry_cgnat = ctk.CTkEntry(form_frame, width=400)
         entry_cgnat.insert(0, cgnat_val)
         entry_cgnat.pack(anchor="w")
-        tk.Label(form_frame, text="Required for hosts behind a CGNAT, optional otherwise.", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Required for hosts behind a CGNAT, optional otherwise.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        tk.Label(form_frame, text="Additional Arguments").pack(anchor="w")
-        entry_args = tk.Entry(form_frame, width=40)
+        ctk.CTkLabel(form_frame, text="Additional Arguments").pack(anchor="w")
+        entry_args = ctk.CTkEntry(form_frame, width=400)
         entry_args.insert(0, args_val)
         entry_args.pack(anchor="w")
-        tk.Label(form_frame, text="Leave blank unless you know what you're doing!", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Leave blank unless you know what you're doing!", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        tk.Label(form_frame, text="Number of Instances (Required)").pack(anchor="w")
+        ctk.CTkLabel(form_frame, text="Number of Instances (Required)").pack(anchor="w")
         saved_instances = self.setup_data.get("numInstances", 0)
         if saved_instances == "": saved_instances = 0
         var_instances = tk.IntVar(value=int(saved_instances))
-        spin_instances = tk.Spinbox(form_frame, from_=0, to=100, textvariable=var_instances)
-        spin_instances.pack(anchor="w")
-        tk.Label(form_frame, text="Will automatically update your monitoring script and netconfig.", font=("Arial", 8), fg="gray").pack(anchor="w", pady=(0, 5))
+        
+        # Note: CustomTkinter does not have a native Spinbox, utilizing TK Spinbox with styling
+        spin_instances = tk.Spinbox(form_frame, from_=0, to=100, textvariable=var_instances, 
+                                    bg="#343638", fg="white", buttonbackground="#2B2B2B")
+        spin_instances.pack(anchor="w", pady=2)
+        
+        ctk.CTkLabel(form_frame, text="Will automatically update your monitoring script and netconfig.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
-        btn_frame = tk.Frame(form_frame)
+        btn_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
         btn_frame.pack(pady=20, fill="x")
 
-        tk.Button(btn_frame, text="Open Config", command=lambda: os.startfile(CONFIG_LOCAL) if os.path.exists(CONFIG_LOCAL) else None).pack(fill="x")
-        tk.Button(btn_frame, text="Open Netconfig", command=lambda: os.startfile(NETCONFIG_PATH) if os.path.exists(NETCONFIG_PATH) else None).pack(fill="x")
+        ctk.CTkButton(btn_frame, text="Open Config", command=lambda: os.startfile(CONFIG_LOCAL) if os.path.exists(CONFIG_LOCAL) else None).pack(fill="x", pady=2)
+        ctk.CTkButton(btn_frame, text="Open Netconfig", command=lambda: os.startfile(NETCONFIG_PATH) if os.path.exists(NETCONFIG_PATH) else None).pack(fill="x", pady=2)
         
         def save_and_return(should_return=True):
             if not entry_discord.get() or not entry_pass.get() or var_instances.get() == 0:
@@ -661,9 +727,13 @@ class EchoServerConfig(tk.Tk):
             messagebox.showinfo("Done", "Changes saved. New client config generated on Desktop.")
             self.build_main_menu()
 
-        tk.Button(btn_frame, text="Generate Client Config", command=generate_client).pack(fill="x", pady=5)
-        tk.Button(btn_frame, text="Save & Return", bg="green", fg="white", command=save_and_return).pack(side="left", expand=True, fill="x")
-        tk.Button(btn_frame, text="Discard & Return", command=self.build_main_menu).pack(side="right", expand=True, fill="x")
+        ctk.CTkButton(btn_frame, text="Generate Client Config", command=generate_client).pack(fill="x", pady=5)
+        
+        # Footer buttons
+        footer = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        footer.pack(fill="x", pady=5)
+        ctk.CTkButton(footer, text="Save & Return", fg_color="green", command=save_and_return).pack(side="left", expand=True, fill="x", padx=2)
+        ctk.CTkButton(footer, text="Discard & Return", fg_color="firebrick", command=self.build_main_menu).pack(side="right", expand=True, fill="x", padx=2)
 
 if __name__ == "__main__":
     app = EchoServerConfig()

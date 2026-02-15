@@ -5,6 +5,7 @@
 ###################################################################
 
 # Changes 
+# v2.1.0 - Fixed python & library auto-install when downloading stat tracker (uses v-env).
 # v2.0.0 - Added Stat Tracker integration. Moved Startup/AutoUpdate options to Config GUI.
 # v1.1.1 - Added Restore Defaults button, single link code enforcement, Discord redirect on link code.
 # v1.1.0 - Removed PS7 dialogue. Added pause spawning option, uptime tracking, unlinked session detection.
@@ -12,7 +13,7 @@
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "2.0.0"
+$Global:Version = "2.1.0"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 $Global:NotifiedPids = @{}
@@ -76,6 +77,7 @@ $LogPath = Join-Path $ScriptRoot "_local\r14logs"
 # Stat Tracker Filename determination
 $StatTrackerName = if ($Global:IsBinary) { "EchoVR-Server-Stat-Tracker.exe" } else { "EchoVR-Server-Stat-Tracker.py" }
 $StatTrackerPath = Join-Path $ScriptRoot $StatTrackerName
+$VenvPath = Join-Path $ScriptRoot "_local\venv_tracker"
 
 # Known errors
 $Global:ErrorList = @(
@@ -495,6 +497,57 @@ Function Get-StatTracker {
         Invoke-WebRequest -Uri $targetAsset.browser_download_url -OutFile $StatTrackerPath
         
         [System.Windows.Forms.MessageBox]::Show("Stat Tracker downloaded successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        
+        # --- Dependency Check for Python Version ---
+        if (-not $Global:IsBinary) {
+            $pyInstalled = (Get-Command "python" -ErrorAction SilentlyContinue)
+            $libsInstalled = $true
+            
+            if ($pyInstalled) {
+                # Check for libraries
+                try {
+                    $testProc = Start-Process -FilePath "python" -ArgumentList "-c `"import customtkinter, requests, matplotlib`"" -PassThru -WindowStyle Hidden -Wait
+                    if ($testProc.ExitCode -ne 0) { $libsInstalled = $false }
+                } catch { $libsInstalled = $false }
+            }
+
+            if (-not $pyInstalled -or -not $libsInstalled) {
+                $dialogResult = [System.Windows.Forms.MessageBox]::Show(
+                    "Python is missing or required libraries (customtkinter, requests, matplotlib) are not installed.`n`nDo you want to automatically install them now?", 
+                    "Missing Dependencies", 
+                    [System.Windows.Forms.MessageBoxButtons]::OKCancel, 
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+
+                if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
+                    # Create a temporary setup script
+                    $setupScriptBlock = @"
+Write-Host "Installing Python 3.13 via Winget..." -ForegroundColor Cyan
+winget install -e --id Python.Python.3.13 --silent --accept-package-agreements --source winget
+
+Write-Host "Setting up Virtual Environment..." -ForegroundColor Cyan
+# Refresh env to find python if just installed
+`$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+$Global:VenvPath = "$VenvPath"
+
+if (Test-Path `$Global:VenvPath) { Remove-Item `$Global:VenvPath -Recurse -Force }
+python -m venv `$Global:VenvPath
+
+Write-Host "Installing Libraries to Virtual Environment..." -ForegroundColor Cyan
+& "`$Global:VenvPath\Scripts\pip" install customtkinter requests matplotlib
+
+Write-Host "Installation Complete. You may close this window." -ForegroundColor Green
+Start-Sleep -Seconds 3
+exit
+"@
+                    $setupFile = Join-Path $ScriptRoot "setup_tracker.ps1"
+                    Set-Content -Path $setupFile -Value $setupScriptBlock
+                    
+                    Start-Process -FilePath "pwsh" -ArgumentList "-Command & '$setupFile'"
+                }
+            }
+        }
+
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to download Stat Tracker: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } finally {
@@ -530,7 +583,7 @@ $ContextMenuStrip.Items.Add($MenuItemConfig) | Out-Null
 
 # 4. STAT TRACKER (Dynamic)
 $MenuItemStatTracker = New-Object System.Windows.Forms.ToolStripMenuItem
-$MenuItemStatTracker.Text = "Checking Stat Tracker..." # Placeholder
+$MenuItemStatTracker.Text = "Checking for Stat Tracker..."
 $MenuItemStatTracker.Add_Click({
     if (Test-Path $StatTrackerPath) {
         # Launch Logic
@@ -538,7 +591,13 @@ $MenuItemStatTracker.Add_Click({
             if ($Global:IsBinary) {
                 Start-Process -FilePath $StatTrackerPath
             } else {
-                Start-Process -FilePath "python" -ArgumentList "`"$StatTrackerPath`""
+                # Check for venv python first
+                $venvPython = Join-Path $VenvPath "Scripts\python.exe"
+                if (Test-Path $venvPython) {
+                    Start-Process -FilePath $venvPython -ArgumentList "`"$StatTrackerPath`""
+                } else {
+                    Start-Process -FilePath "python" -ArgumentList "`"$StatTrackerPath`""
+                }
             }
         } catch {
             [System.Windows.Forms.MessageBox]::Show("Failed to launch Stat Tracker. Ensure Python is installed if using the script version.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)

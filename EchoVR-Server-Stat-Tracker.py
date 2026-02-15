@@ -18,7 +18,7 @@ import tkinter.messagebox as msgbox
 import matplotlib.gridspec as gridspec
 
 # --- Configuration & Constants ---
-CURRENT_VERSION = "2.0.0"
+CURRENT_VERSION = "2.1.0"
 CTK_THEME = "dark-blue"
 REPO_OWNER = "EchoTools"
 REPO_NAME = "EchoVR-Windows-Hosts-Resources"
@@ -262,6 +262,9 @@ class StatTrackerApp(ctk.CTk):
                 processed_files.append(filename) # Skip unreadable but mark as done
                 continue
 
+            # Track seen player entries for this file to prevent duplicates
+            seen_joins = set()
+
             for line in lines:
                 line = line.strip()
                 if not line: continue
@@ -272,7 +275,15 @@ class StatTrackerApp(ctk.CTk):
                     if gt_match and lvl_match:
                         self.append_to_file(LEVELS_TXT, f"{date_prefix} | {line}")
 
-                if "Accepted 1 players into game server" in line:
+                # OLD LOGIC: "Accepted 1 players..."
+                # NEW LOGIC: Look for username using standard EchoVR join syntax
+                # Typical syntax: [NETGAME] Player <NAME> joined
+                player_match = re.search(r"\[NETGAME\] User '(.*?)' participating", line)
+                if player_match:
+                     # Check if we've already seen this exact log line in this file
+                     if line in seen_joins:
+                         continue
+                     seen_joins.add(line)
                      self.append_to_file(PLAYERS_TXT, f"{date_prefix} | {line}")
 
                 for error in KNOWN_ERRORS:
@@ -411,17 +422,28 @@ del "%~f0"
         if not os.path.exists(PLAYERS_TXT): return
         csv_path = os.path.join(STATS_DIR, "players.csv")
         with open(PLAYERS_TXT, 'r') as f: lines = f.readlines()
+        
+        seen_entries = set() # Filter for CSV export to skip duplicates
+        
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(["Date", "Time", "Players Accepted"])
+            writer.writerow(["Date", "Time", "Player Log"])
             for line in lines:
                 parts = line.split('|', 1)
                 if len(parts) < 2: continue
                 date_part = parts[0].strip()
                 log_part = parts[1].strip()
+                
+                # Check duplicate before writing
+                # We check the full log line content including the timestamp
+                if log_part in seen_entries:
+                    continue
+                seen_entries.add(log_part)
+
                 time_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', log_part)
                 time_str = time_match.group(1) if time_match else "00:00:00"
-                writer.writerow([date_part, time_str, "1"])
+                # Export the raw log part so user can see which player joined
+                writer.writerow([date_part, time_str, log_part])
 
     def process_errors_csv(self):
         if not os.path.exists(ERRORS_TXT): return
@@ -513,20 +535,28 @@ del "%~f0"
         return data
 
     def count_players(self):
-        count = 0
+        unique_players = set()
         if not os.path.exists(PLAYERS_TXT): return 0
         delta = self.get_filter_delta()
+        
         with open(PLAYERS_TXT, 'r') as f:
             for line in f:
                 parts = line.split('|', 1)
                 if len(parts) < 2: continue
                 date_part = parts[0].strip()
                 log_part = parts[1].strip()
+                
                 time_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', log_part)
                 time_str = time_match.group(1) if time_match else "00:00:00"
+                
                 if self.is_within_time(date_part, time_str, delta):
-                    count += 1
-        return count
+                    # Extract username from single quotes
+                    player_match = re.search(r"\[NETGAME\] User '(.*?)' participating", log_part)
+                    if player_match:
+                        username = player_match.group(1)
+                        unique_players.add(username)
+                        
+        return len(unique_players)
 
     def parse_errors(self):
         counts = {k: 0 for k in KNOWN_ERRORS}
@@ -569,7 +599,7 @@ del "%~f0"
                 else:
                     display_time = oldest_date
 
-                self.status_label.configure(text=f"Since: {display_time.strftime('%Y-%m-%d %H:%M')}", text_color="white")
+                self.status_label.configure(text=f"Since: {display_time.strftime('%Y-%m-%d at %H:%M')}", text_color="white")
 
         level_data = self.parse_levels(self.time_filter.get())
         player_count = self.count_players()
@@ -583,6 +613,12 @@ del "%~f0"
         self.player_count_label.configure(text=f"Players Served: {player_count}")
         self.game_count_label.configure(text=f"Games Hosted: {total_games}")
         self.error_count_label.configure(text=f"Errors Encountered: {total_errors}")
+        
+        # Update Error Label Color
+        if total_errors == 0:
+            self.error_count_label.configure(text_color="#2cc985") # Green
+        else:
+            self.error_count_label.configure(text_color="#ff5555") # Red
 
         show_pct = (self.display_mode.get() == 1)
 
@@ -677,5 +713,4 @@ del "%~f0"
 
 if __name__ == "__main__":
     app = StatTrackerApp()
-
     app.mainloop()
