@@ -22,25 +22,26 @@ DASHBOARD_DIR = os.path.join(ROOT_DIR, "dashboard")
 SETUP_JSON = os.path.join(DASHBOARD_DIR, "setup.json")
 BIN_DIR = os.path.join(ROOT_DIR, "bin", "win10")
 CONFIG_LOCAL = os.path.join(ROOT_DIR, "_local", "config.json")
-NETCONFIG_PATH = os.path.join(ROOT_DIR, "sourcedb", "rad15", "json", "r14", "config", "netconfig_dedicatedserver.json")
 
 # URLs
-newHostFilesURL = "https://github.com/user-attachments/files/25172342/newhostfiles.zip"
-GITHUB_API_LATEST = f"https://api.github.com/repos/EchoTools/EchoVR-Windows-Hosts-Resources/releases/latest"
+URL_GUNPATCH = "https://raw.githubusercontent.com/EchoTools/EchoVR-Windows-Hosts-Resources/main/gunpatch.zip"
+URL_PNSRAD = "https://raw.githubusercontent.com/EchoTools/EchoVR-Windows-Hosts-Resources/main/dll/pnsradgameserver.dll"
+URL_DBGCORE = "https://raw.githubusercontent.com/EchoTools/EchoVR-Windows-Hosts-Resources/main/dll/dbgcore.dll"
+GITHUB_API_LATEST = "https://api.github.com/repos/EchoTools/EchoVR-Windows-Hosts-Resources/releases/latest"
 
 # Monitor Filenames
 MONITOR_EXE = "EchoVR-Server-Monitor.exe"
 MONITOR_SCRIPT = "EchoVR-Server-Monitor.ps1"
 
 # MD5 Hashes
-HASH_DBGCORE = "fc75604280599d92576c75476a9ae894"
-HASH_PNSRAD = "707610f329b239651a994b35b139dc22"
+HASH_DBGCORE = "7E7998C29A1E588AF659E19C3DD27265"
+HASH_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
 
 class EchoServerConfig(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("EchoVR Server Setup Tool")
-        self.geometry("485x820") # Slightly larger for CTK padding
+        self.geometry("490x820") # Slightly larger for CTK padding
         self.resizable(False, False)
         
         # State variables
@@ -76,7 +77,7 @@ class EchoServerConfig(ctk.CTk):
                 "checkCGNAT": "Fail",  
                 "hasUnifi": False,
                 "numInstances": "",    
-                "upperPortRange": 6792,
+                "upperPortRange": 6793, # Default 1 server (6792-6793)
                 "chklst_privateNet": False,
                 "chklst_staticIP": False,
                 "chklst_portFwd": False,
@@ -197,8 +198,8 @@ class EchoServerConfig(ctk.CTk):
     def verify_hash(self, filepath, expected_hash):
         if not os.path.exists(filepath): return False
         with open(filepath, "rb") as f:
-            file_hash = hashlib.md5(f.read()).hexdigest()
-        return file_hash == expected_hash
+            file_hash = hashlib.md5(f.read()).hexdigest().upper() # Ensure uppercase for comparison
+        return file_hash == expected_hash.upper()
 
     # --- GUI Construction ---
 
@@ -266,7 +267,7 @@ class EchoServerConfig(ctk.CTk):
         checklist_items_map = [
             ("chklst_privateNet", "Set Network Profile to Private"),
             ("chklst_staticIP", "Create a Static LAN IP for This Machine"),
-            ("chklst_portFwd", f"Forward Ports 6792-{self.setup_data.get('upperPortRange', 6792)} (TCP + UDP)")
+            ("chklst_portFwd", f"Forward Ports 6792-{self.setup_data.get('upperPortRange', 6793)} (TCP + UDP)")
         ]
 
         # Insert Unifi Item if applicable
@@ -441,28 +442,28 @@ class EchoServerConfig(ctk.CTk):
         self.patch_thread.start()
 
     def run_patch_sequence(self):
-        """Replicates patch.bat logic in Python with progress updates."""
+        """Replicates patch logic with new individual file downloads."""
         try:
-            # Step 1: Download files (simulated in progress)
-            self.update_btn_text("Downloading...")
+            # Step 1: Download DLLs and GunPatch
+            self.update_btn_text("Downloading DLLs...")
             
-            url = newHostFilesURL
             temp_dir = os.path.join(DASHBOARD_DIR, "temp")
             if not os.path.exists(temp_dir): os.makedirs(temp_dir)
-            zip_path = os.path.join(temp_dir, "newhostfiles.zip")
             
-            urllib.request.urlretrieve(url, zip_path)
+            # Download dbgcore.dll
+            urllib.request.urlretrieve(URL_DBGCORE, os.path.join(BIN_DIR, "dbgcore.dll"))
             
-            self.update_btn_text("Extracting...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
+            # Download pnsradgameserver.dll
+            urllib.request.urlretrieve(URL_PNSRAD, os.path.join(BIN_DIR, "pnsradgameserver.dll"))
             
-            shutil.copy(os.path.join(temp_dir, "dbgcore.dll"), BIN_DIR)
-            shutil.copy(os.path.join(temp_dir, "pnsradgameserver.dll"), BIN_DIR)
+            self.update_btn_text("Downloading Patch...")
+            # Download gunpatch.zip
+            gunpatch_zip_path = os.path.join(temp_dir, "gunpatch.zip")
+            urllib.request.urlretrieve(URL_GUNPATCH, gunpatch_zip_path)
             
-            gunpatch_zip = os.path.join(temp_dir, "gunpatch.zip") 
-            if os.path.exists(gunpatch_zip):
-                 with zipfile.ZipFile(gunpatch_zip, 'r') as zip_ref:
+            self.update_btn_text("Extracting Patch...")
+            if os.path.exists(gunpatch_zip_path):
+                 with zipfile.ZipFile(gunpatch_zip_path, 'r') as zip_ref:
                     zip_ref.extractall(ROOT_DIR)
 
             # Step 2: Native Patch Logic
@@ -532,7 +533,6 @@ class EchoServerConfig(ctk.CTk):
             self.after(500, self.finish_patching) # Schedule the GUI update on main thread
 
             # Cleanup temp directory
-            temp_dir = os.path.join(DASHBOARD_DIR, "temp")
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
             
@@ -643,7 +643,7 @@ class EchoServerConfig(ctk.CTk):
         entry_args = ctk.CTkEntry(form_frame, width=400)
         entry_args.insert(0, args_val)
         entry_args.pack(anchor="w")
-        ctk.CTkLabel(form_frame, text="Leave blank unless you know what you're doing!", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Raw text appended to serverdb_host. Leave blank unless you know what you're doing!", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
         ctk.CTkLabel(form_frame, text="Number of Instances (Required)").pack(anchor="w")
         saved_instances = self.setup_data.get("numInstances", 0)
@@ -655,13 +655,12 @@ class EchoServerConfig(ctk.CTk):
                                     bg="#343638", fg="white", buttonbackground="#2B2B2B")
         spin_instances.pack(anchor="w", pady=2)
         
-        ctk.CTkLabel(form_frame, text="Will automatically update your monitoring script and netconfig.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
+        ctk.CTkLabel(form_frame, text="Will automatically update your monitoring script.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
         btn_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
         btn_frame.pack(pady=20, fill="x")
 
         ctk.CTkButton(btn_frame, text="Open Config", command=lambda: os.startfile(CONFIG_LOCAL) if os.path.exists(CONFIG_LOCAL) else None).pack(fill="x", pady=2)
-        ctk.CTkButton(btn_frame, text="Open Netconfig", command=lambda: os.startfile(NETCONFIG_PATH) if os.path.exists(NETCONFIG_PATH) else None).pack(fill="x", pady=2)
         
         def save_and_return(should_return=True):
             if not entry_discord.get() or not entry_pass.get() or var_instances.get() == 0:
@@ -688,17 +687,6 @@ class EchoServerConfig(ctk.CTk):
             if not os.path.exists(os.path.dirname(CONFIG_LOCAL)): os.makedirs(os.path.dirname(CONFIG_LOCAL))
             with open(CONFIG_LOCAL, 'w') as f: json.dump(new_config, f, indent=4)
 
-            if os.path.exists(NETCONFIG_PATH):
-                try:
-                    with open(NETCONFIG_PATH, 'r') as f: content = f.read()
-                    content_fixed = re.sub(r',(\s*?[\]}])', r'\1', content)
-                    net_data = json.loads(content_fixed)
-                    net_data["broadcaster_init"]["retries"] = var_instances.get() + 1
-                    with open(NETCONFIG_PATH, 'w') as f: json.dump(net_data, f, indent=4)
-                except Exception as e:
-                    messagebox.showerror("Netconfig Error", f"Could not update netconfig file: {e}")
-                    return False
-
             # Check 1: Port Forward Reset Logic
             current_instances = self.setup_data.get("numInstances", 0)
             if current_instances == "": current_instances = 0
@@ -707,8 +695,15 @@ class EchoServerConfig(ctk.CTk):
             if current_instances != var_instances.get():
                 self.setup_data["chklst_portFwd"] = False 
 
-            self.setup_data["numInstances"] = var_instances.get()
-            self.setup_data["upperPortRange"] = 6792 + var_instances.get()
+            # Update Port Forwarding Math:
+            # 2 Ports per server (Game + HTTP)
+            # Start: 6792
+            # End: 6792 + (Instances * 2) - 1
+            num_instances = var_instances.get()
+            upper_port = 6792 + (num_instances * 2) - 1
+            
+            self.setup_data["numInstances"] = num_instances
+            self.setup_data["upperPortRange"] = upper_port
             self.setup_data["isConfigured"] = True
             self.save_setup()
 

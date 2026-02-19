@@ -5,18 +5,25 @@
 ###################################################################
 
 # Changes 
+# v3.0.0 - Added Port/API management, DLL updates & hash checks. Removed Stat Tracker, Logfile Error Parsing.
 # v2.1.1 - Auto-cleanup of setup_tracker.ps1 after installation.
-# v2.1.0 - Fixed python & library auto-install when downloading stat tracker (uses v-env).
-# v2.0.0 - Added Stat Tracker integration. Moved Startup/AutoUpdate options to Config GUI.
-# v1.1.1 - Added Restore Defaults button, single link code enforcement, Discord redirect on link code.
-# v1.1.0 - Removed PS7 dialogue. Added pause spawning option, uptime tracking, unlinked session detection.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "2.1.1"
+$Global:Version = "3.0.0"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
+
+# Port Management & Tracking
+# Structure: @{ PID = @{ GS=1234; API=1235 } }
+$Global:PortMap = @{}
+$Global:BasePort = 6792
+
+# DLL Hash Targets (MD5)
+$Global:Hash_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
+$Global:Hash_DBGCORE = "7E7998C29A1E588AF659E19C3DD27265"
+
 $Global:NotifiedPids = @{}
 $Global:LinkCodeActive = $false
 Add-Type -AssemblyName System.Windows.Forms
@@ -26,7 +33,6 @@ Add-Type -AssemblyName System.Drawing
 # 0. MODE DETECTION, PS7 CHECK, SINGLE INSTANCE CHECK
 # ==============================================================================
 
-# Detect if running as a compiled .exe or a raw .ps1 script
 $CurrentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
 $ProcessName = $CurrentProcess.ProcessName
 
@@ -71,29 +77,12 @@ $EchoExePath = Join-Path $ScriptRoot "bin\win10\echovr.exe"
 $DashboardDir = Join-Path $ScriptRoot "dashboard"
 $SetupFile = Join-Path $DashboardDir "setup.json"
 $MonitorFile = Join-Path $DashboardDir "monitor.json"
-$NetConfigPath = Join-Path $ScriptRoot "sourcedb\rad15\json\r14\config\netconfig_dedicatedserver.json"
 $LocalConfigPath = Join-Path $ScriptRoot "_local\config.json"
 $LogPath = Join-Path $ScriptRoot "_local\r14logs"
 
-# Stat Tracker Filename determination
-$StatTrackerName = if ($Global:IsBinary) { "EchoVR-Server-Stat-Tracker.exe" } else { "EchoVR-Server-Stat-Tracker.py" }
-$StatTrackerPath = Join-Path $ScriptRoot $StatTrackerName
-$VenvPath = Join-Path $ScriptRoot "_local\venv_tracker"
-
-# Known errors
-$Global:ErrorList = @(
-    "Unable to find MiniDumpWriteDump",
-    "[NETGAME] Service status request failed: 400 Bad Request",
-    "[NETGAME] Service status request failed: 404 Not Found",
-    "[TCP CLIENT] [R14NETCLIENT] connection to ws:///login",
-    "[TCP CLIENT] [R14NETCLIENT] connection to failed",
-    "[TCP CLIENT] [R14NETCLIENT] connection to established", 
-    "[TCP CLIENT] [R14NETCLIENT] connection to restored",
-    "[TCP CLIENT] [R14NETCLIENT] connection to closed",
-    "[TCP CLIENT] [R14NETCLIENT] Lost connection (okay) to peer",
-    "[NETGAME] Service status request failed: 502 Bad Gateway",
-    "[NETGAME] Service status request failed: 0 Unknown"
-)
+# DLL Paths
+$Path_PNSRAD = Join-Path $ScriptRoot "bin\win10\pnsradgameserver.dll"
+$Path_DBGCORE = Join-Path $ScriptRoot "bin\win10\dbgcore.dll"
 
 $StartupFolder = [Environment]::GetFolderPath('Startup')
 $ShortcutPath = Join-Path $StartupFolder "EchoVR Server Monitor.lnk"
@@ -157,18 +146,12 @@ Function Save-MonitorConfig ($configObj) {
 }
 
 Function Update-ExternalConfigs ($numInstances) {
+    # Only update setup.json for dashboard compatibility
     if (Test-Path $SetupFile) {
         $dashData = Get-Content $SetupFile -Raw | ConvertFrom-Json
         $dashData.numInstances = [int]$numInstances
-        $dashData.upperPortRange = 6792 + [int]$numInstances
+        $dashData.upperPortRange = 6792 + ([int]$numInstances * 2) # Adjusted for GS+API pairs
         $dashData | ConvertTo-Json -Depth 4 | Set-Content $SetupFile
-    }
-    if (Test-Path $NetConfigPath) {
-        try {
-            $netData = Get-Content $NetConfigPath -Raw | ConvertFrom-Json
-            $netData.retries = [int]$numInstances + 1
-            $netData | ConvertTo-Json -Depth 4 | Set-Content $NetConfigPath
-        } catch {}
     }
 }
 
@@ -388,13 +371,6 @@ Function Show-ConfigWindow {
     $btnOpenLocal.Add_Click({ Invoke-Item $LocalConfigPath })
     $form.Controls.Add($btnOpenLocal)
 
-    $btnOpenNet = New-Object System.Windows.Forms.Button
-    $btnOpenNet.Text = "Open Net Config"
-    $btnOpenNet.Location = New-Object System.Drawing.Point(210, $y)
-    $btnOpenNet.Size = New-Object System.Drawing.Size(180, 25)
-    $btnOpenNet.Add_Click({ Invoke-Item $NetConfigPath })
-    $form.Controls.Add($btnOpenNet)
-
     $y += 40
     
     # Save Button
@@ -477,84 +453,32 @@ Function Show-ConfigWindow {
 }
 
 # ==============================================================================
-# 5. STAT TRACKER LOGIC
+# 5. PORT MANAGEMENT
 # ==============================================================================
 
-Function Get-StatTracker {
-    $url = "https://api.github.com/repos/$($Global:GithubOwner)/$($Global:GithubRepo)/releases/latest"
+Function Get-AvailablePortPair {
+    # Start checking from BasePort
+    # We step by 2: (6792,6793), (6794,6795), etc.
+    $maxChecks = 100 
     
-    try {
-        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
+    for ($i = 0; $i -lt $maxChecks; $i++) {
+        $gsPort = $Global:BasePort + ($i * 2)
+        $apiPort = $gsPort + 1
         
-        $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop
-        $targetAsset = $response.assets | Where-Object { $_.name -eq $StatTrackerName } | Select-Object -First 1
-
-        if (-not $targetAsset) { 
-            [System.Windows.Forms.MessageBox]::Show("Could not find $StatTrackerName in the latest release.", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            return 
-        }
-
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $targetAsset.browser_download_url -OutFile $StatTrackerPath
-        
-        [System.Windows.Forms.MessageBox]::Show("Stat Tracker downloaded successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        
-        # --- Dependency Check for Python Version ---
-        if (-not $Global:IsBinary) {
-            $pyInstalled = (Get-Command "python" -ErrorAction SilentlyContinue)
-            $libsInstalled = $true
-            
-            if ($pyInstalled) {
-                # Check for libraries
-                try {
-                    $testProc = Start-Process -FilePath "python" -ArgumentList "-c `"import customtkinter, requests, matplotlib`"" -PassThru -WindowStyle Hidden -Wait
-                    if ($testProc.ExitCode -ne 0) { $libsInstalled = $false }
-                } catch { $libsInstalled = $false }
-            }
-
-            if (-not $pyInstalled -or -not $libsInstalled) {
-                $dialogResult = [System.Windows.Forms.MessageBox]::Show(
-                    "Python is missing or required libraries (customtkinter, requests, matplotlib) are not installed.`n`nDo you want to automatically install them now?", 
-                    "Missing Dependencies", 
-                    [System.Windows.Forms.MessageBoxButtons]::OKCancel, 
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-
-                if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
-                    # Create a temporary setup script
-                    $setupScriptBlock = @"
-Write-Host "Installing Python 3.13 via Winget..." -ForegroundColor Cyan
-winget install -e --id Python.Python.3.13 --silent --accept-package-agreements --source winget
-
-Write-Host "Setting up Virtual Environment..." -ForegroundColor Cyan
-# Refresh env to find python if just installed
-`$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-`$Global:VenvPath = "$VenvPath"
-
-if (Test-Path `$Global:VenvPath) { Remove-Item `$Global:VenvPath -Recurse -Force }
-python -m venv `$Global:VenvPath
-
-Write-Host "Installing Libraries to Virtual Environment..." -ForegroundColor Cyan
-& "`$Global:VenvPath\Scripts\pip" install customtkinter requests matplotlib
-
-Write-Host "Installation Complete. You may close this window." -ForegroundColor Green
-Start-Sleep -Seconds 3
-exit
-"@
-                    $setupFile = Join-Path $ScriptRoot "setup_tracker.ps1"
-                    Set-Content -Path $setupFile -Value $setupScriptBlock
-                    
-                    # Chain the execution with a file deletion command so the temp file is removed after the window closes
-                    Start-Process -FilePath "pwsh" -ArgumentList "-Command & '$setupFile'; Remove-Item '$setupFile' -Force"
-                }
+        $inUse = $false
+        foreach ($pidKey in $Global:PortMap.Keys) {
+            $entry = $Global:PortMap[$pidKey]
+            if ($entry.GS -eq $gsPort -or $entry.API -eq $apiPort) {
+                $inUse = $true
+                break
             }
         }
-
-    } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to download Stat Tracker: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    } finally {
-        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+        
+        if (-not $inUse) {
+            return @{ GS=$gsPort; API=$apiPort }
+        }
     }
+    return $null
 }
 
 # ==============================================================================
@@ -583,33 +507,13 @@ $MenuItemConfig.Add_Click({
 })
 $ContextMenuStrip.Items.Add($MenuItemConfig) | Out-Null
 
-# 4. STAT TRACKER (Dynamic)
-$MenuItemStatTracker = New-Object System.Windows.Forms.ToolStripMenuItem
-$MenuItemStatTracker.Text = "Checking for Stat Tracker..."
-$MenuItemStatTracker.Add_Click({
-    if (Test-Path $StatTrackerPath) {
-        # Launch Logic
-        try {
-            if ($Global:IsBinary) {
-                Start-Process -FilePath $StatTrackerPath
-            } else {
-                # Check for venv python first
-                $venvPython = Join-Path $VenvPath "Scripts\python.exe"
-                if (Test-Path $venvPython) {
-                    Start-Process -FilePath $venvPython -ArgumentList "`"$StatTrackerPath`""
-                } else {
-                    Start-Process -FilePath "python" -ArgumentList "`"$StatTrackerPath`""
-                }
-            }
-        } catch {
-            [System.Windows.Forms.MessageBox]::Show("Failed to launch Stat Tracker. Ensure Python is installed if using the script version.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    } else {
-        # Download Logic
-        Get-StatTracker
-    }
+# 4. MANUAL UPDATE CHECK
+$MenuItemUpdate = New-Object System.Windows.Forms.ToolStripMenuItem
+$MenuItemUpdate.Text = "Check for Updates"
+$MenuItemUpdate.Add_Click({
+    Test-ForUpdates -ManualCheck $true
 })
-$ContextMenuStrip.Items.Add($MenuItemStatTracker) | Out-Null
+$ContextMenuStrip.Items.Add($MenuItemUpdate) | Out-Null
 
 $ContextMenuStrip.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
@@ -659,9 +563,9 @@ Function Clear-Jobs {
     Get-Job -State Completed | Remove-Job
 }
 
-# 1. STUCK CHECK
-Function Start-Stuck-Watchdog ($procId, $timeoutMs) {
-    $jobName = "${procId}_stuck"
+# 1. WATCHDOG & LOG SCANNER
+Function Start-Watchdog ($procId, $timeoutMs) {
+    $jobName = "${procId}_watch"
     $timeoutSeconds = $timeoutMs / 1000
 
     if (-not (Get-Job -Name $jobName -ErrorAction SilentlyContinue)) {
@@ -677,10 +581,12 @@ Function Start-Stuck-Watchdog ($procId, $timeoutMs) {
                     
                     $startTime = Get-Date
                     while ($true) {
+                        # Stuck Check
                         if (((Get-Date) - $startTime).TotalSeconds -gt $limitSeconds) {
                             Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
                             break 
                         }
+
                         if (Test-Path $logPath) {
                             try {
                                 $currentLine = Get-Content -Path $logPath -Tail 1 -ErrorAction Stop
@@ -695,65 +601,57 @@ Function Start-Stuck-Watchdog ($procId, $timeoutMs) {
     }
 }
 
-# 2. ERROR CHECK
-Function Test-LogErrors ($procId) {
+Function Search-LogForInfo ($procId) {
+    # This scans for Port Verification and Link Codes
     $logFile = Get-ChildItem -Path $LogPath -Filter "*_${procId}.log" -ErrorAction SilentlyContinue | 
                Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    
+
     if ($logFile) {
-        $lastLine = Get-Content -Path $logFile.FullName -Tail 1 -ErrorAction SilentlyContinue
-        
-        if ($lastLine) {
-            $lineClean = $lastLine -replace "^.*\]: ", "" -replace "[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*", "" -replace "ws://.* ", "" -replace " ws://.*api_key=.*",""  -replace "\?auth=.*", ""
-            if ($Global:ErrorList -contains $lineClean) {
-                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        $lines = Get-Content -LiteralPath $logFile.FullName -Tail 15 -ErrorAction SilentlyContinue
+        if ($null -eq $lines) { return }
+        $content = $lines -join "`n"
+
+        # --- Port Verification ---
+        # 1. Dedicated: broadcaster initialized at [XXX.XXX.XXX.XXX:GSPORT]
+        if ($content -match "Dedicated: broadcaster initialized at \[[0-9\.]+:(\d+)\]") {
+            $foundGS = [int]$Matches[1]
+            if ($Global:PortMap.ContainsKey($procId)) {
+                $Global:PortMap[$procId].GS_Confirmed = $foundGS
             }
         }
-    }
-}
-
-# 3. LINK CODE CHECK
-Function Test-LinkCode ($procId) {
-    if ($Global:NotifiedPids.ContainsKey($procId)) { return }
-    if ($Global:LinkCodeActive) { return } # Prevent multiple popups
-
-    # Find the log file
-    $logFile = Get-ChildItem -Path $LogPath -Filter "*_${procId}.log" -ErrorAction SilentlyContinue | 
-               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-
-    if ($logFile) {
-        $lines = Get-Content -LiteralPath $logFile.FullName -Tail 5 -ErrorAction SilentlyContinue
         
-        if ($null -eq $lines) { return }
-        
-        $content = $lines -join "`n"
-        
-        # Matches: [NETGAME] [DMO-...] Your Code is: >>> ABCD <<<
-        if ($content -match ">>>\s*(?<code>[A-Z0-9]+)\s*<<<") {
-            $code = $Matches['code'].Trim()
-            
-            if (-not [string]::IsNullOrWhiteSpace($code)) {
-                $Global:NotifiedPids[$procId] = $true
-                $Global:LinkCodeActive = $true
-                
-                # Halt spawning immediately to protect validity of code
-                $conf = Get-MonitorConfig
-                $conf.pauseSpawning = $true
-                Save-MonitorConfig $conf
-                
-                # Using Start-Process to ensure the popup is visible over the game
-                $msgBody = "Your link code is: $code`n`nClick OK to open command central.`nClick Link EchoVRCE and enter your code.`n`nUnpause server spawning in the system tray after linking."
-                $msgTitle = "Link Code Detected"
-                $discordUrl = "discord://https://discord.com/channels/779349159852769310/1227795372244729926/1355176306484056084"
-                
-                $cmd = "Add-Type -AssemblyName System.Windows.Forms; " +
-                       "`$res = [System.Windows.Forms.MessageBox]::Show('$msgBody', '$msgTitle', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); " +
-                       "if (`$res -eq [System.Windows.Forms.DialogResult]::OK) { Start-Process '$discordUrl' }"
-                
-                $bytes = [System.Text.Encoding]::Unicode.GetBytes($cmd)
-                $encodedCommand = [Convert]::ToBase64String($bytes)
-                
-                Start-Process -FilePath "powershell.exe" -ArgumentList "-WindowStyle Hidden", "-EncodedCommand $encodedCommand" -WindowStyle Hidden
+        # 2. [NETGAME] Bound HTTP listener to 127.0.0.1:APIPORT
+        if ($content -match "\[NETGAME\] Bound HTTP listener to [0-9\.]+:(\d+)") {
+            $foundAPI = [int]$Matches[1]
+            if ($Global:PortMap.ContainsKey($procId)) {
+                $Global:PortMap[$procId].API_Confirmed = $foundAPI
+            }
+        }
+
+        # --- Link Code Check ---
+        if (-not $Global:LinkCodeActive -and -not $Global:NotifiedPids.ContainsKey($procId)) {
+            if ($content -match ">>>\s*(?<code>[A-Z0-9]+)\s*<<<") {
+                $code = $Matches['code'].Trim()
+                if (-not [string]::IsNullOrWhiteSpace($code)) {
+                    $Global:NotifiedPids[$procId] = $true
+                    $Global:LinkCodeActive = $true
+                    
+                    $conf = Get-MonitorConfig
+                    $conf.pauseSpawning = $true
+                    Save-MonitorConfig $conf
+                    
+                    $msgBody = "Your link code is: $code`n`nClick OK to open command central.`nClick Link EchoVRCE and enter your code.`n`nUnpause server spawning in the system tray after linking."
+                    $msgTitle = "Link Code Detected"
+                    $discordUrl = "discord://https://discord.com/channels/779349159852769310/1227795372244729926/1355176306484056084"
+                    
+                    $cmd = "Add-Type -AssemblyName System.Windows.Forms; " +
+                           "`$res = [System.Windows.Forms.MessageBox]::Show('$msgBody', '$msgTitle', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); " +
+                           "if (`$res -eq [System.Windows.Forms.DialogResult]::OK) { Start-Process '$discordUrl' }"
+                    
+                    $bytes = [System.Text.Encoding]::Unicode.GetBytes($cmd)
+                    $encodedCommand = [Convert]::ToBase64String($bytes)
+                    Start-Process -FilePath "powershell.exe" -ArgumentList "-WindowStyle Hidden", "-EncodedCommand $encodedCommand" -WindowStyle Hidden
+                }
             }
         }
     }
@@ -764,13 +662,6 @@ $MonitorAction = {
     $config = Get-MonitorConfig
     $MonitorTimer.Interval = $config.delayProcessCheck
 
-    # Update Stat Tracker Menu Text dynamically
-    if (Test-Path $StatTrackerPath) {
-        $MenuItemStatTracker.Text = "Open Stat Tracker"
-    } else {
-        $MenuItemStatTracker.Text = "Download Stat Tracker"
-    }
-
     # Update Pause Menu Item based on config read
     if ($MenuItemPause.Checked -ne $config.pauseSpawning) {
         $MenuItemPause.Checked = $config.pauseSpawning
@@ -780,20 +671,25 @@ $MonitorAction = {
 
     $processes = @(Get-Process -Name $EchoProcessName -ErrorAction SilentlyContinue)
     $runningCount = $processes.Count
+    $runningIds = $processes.Id
+
+    # --- PORT MAP CLEANUP ---
+    # Remove entries for PIDs that no longer exist
+    $trackedPids = @($Global:PortMap.Keys)
+    foreach ($pidKey in $trackedPids) {
+        if ($runningIds -notcontains $pidKey) {
+            $Global:PortMap.Remove($pidKey)
+        }
+    }
 
     # --- WATCHDOG CHECKS ---
     if ($processes) {
         foreach ($proc in $processes) {
-            Test-LogErrors $proc.Id
-            Start-Stuck-Watchdog $proc.Id $config.delayKillStuck
-            
-            # Check for Link Code
-            Test-LinkCode $proc.Id
+            Start-Watchdog $proc.Id $config.delayKillStuck
+            Search-LogForInfo $proc.Id
         }
     }
     
-    # ... rest of the MonitorAction block ...
-
     # --- UPDATE MENU STATUS & UPTIME LIST ---
     $MenuItemStatus.Text = "Active: $runningCount / $($config.amountOfInstances)                 v$($Global:Version)"
 
@@ -801,7 +697,6 @@ $MonitorAction = {
     $sepIndex = $ContextMenuStrip.Items.IndexOf($MenuItemSeparator1)
     
     # Remove existing dynamic items (between Status and Separator)
-    # Loop backwards to safely remove
     for ($i = $sepIndex - 1; $i -gt 0; $i--) {
         $ContextMenuStrip.Items.RemoveAt($i)
     }
@@ -809,24 +704,25 @@ $MonitorAction = {
     # Add new process items
     if ($processes) {
         $pIndex = 1
-        # Sort by StartTime so the list doesn't jump around
         $sortedProcs = $processes | Sort-Object StartTime
         
         foreach ($proc in $sortedProcs) {
             try {
                 $uptime = New-TimeSpan -Start $proc.StartTime -End (Get-Date)
-                $txt = "{0}. PID {1} | {2}h {3}m {4}s" -f $pIndex, $proc.Id, $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+                
+                # Get Ports for display
+                $pData = $Global:PortMap[$proc.Id]
+                $portStr = if ($pData) { " [GS:$($pData.GS) API:$($pData.API)]" } else { "" }
+
+                $txt = "{0}. PID {1}{2} | {3}h {4}m" -f $pIndex, $proc.Id, $portStr, $uptime.Hours, $uptime.Minutes
                 
                 $item = New-Object System.Windows.Forms.ToolStripMenuItem
                 $item.Text = $txt
-                $item.Enabled = $false # Just informational
+                $item.Enabled = $false 
                 
-                # Insert after Status (index 0)
                 $ContextMenuStrip.Items.Insert($pIndex, $item)
                 $pIndex++
-            } catch {
-                # Process might have closed during calculation
-            }
+            } catch { }
         }
     }
 
@@ -835,14 +731,34 @@ $MonitorAction = {
         $needed = $config.amountOfInstances - $runningCount
 
         if ($needed -gt 0) {
-            $currentFlags = "-numtaskthreads $($config.numTaskThreads) -timestep $($config.timeStep) $($config.additionalArgs)"
+            
             for ($i = 0; $i -lt $needed; $i++) {
-                # If we are spawning multiple, check global pause flag between spawns in case a link code appeared
                 $freshConfig = Get-MonitorConfig
                 if ($freshConfig.pauseSpawning -or $Global:LinkCodeActive) { break }
 
-                Start-Process -FilePath $EchoExePath -ArgumentList $currentFlags -WindowStyle Minimized
-                # Increased delay to catch link codes before spawning next instance
+                # Port Allocation
+                $portPair = Get-AvailablePortPair
+                if ($null -eq $portPair) { 
+                    # Safety valve if somehow run out of ports
+                    break 
+                }
+
+                # Construct Args
+                # User args + our mandatory port args
+                $launchArgs = "-numtaskthreads $($config.numTaskThreads) -timestep $($config.timeStep) $($config.additionalArgs) -port $($portPair.GS) -httpport $($portPair.API)"
+                
+                $newProc = Start-Process -FilePath $EchoExePath -ArgumentList $launchArgs -WindowStyle Minimized -PassThru
+                
+                # Register Ports immediately
+                if ($newProc) {
+                    $Global:PortMap[$newProc.Id] = @{
+                        GS = $portPair.GS
+                        API = $portPair.API
+                        GS_Confirmed = $null
+                        API_Confirmed = $null
+                    }
+                }
+
                 Start-Sleep -Milliseconds 3000
             }
         }
@@ -852,34 +768,154 @@ $MonitorAction = {
 $MonitorTimer.Add_Tick($MonitorAction)
 
 # ==============================================================================
-# 8. AUTO-UPDATE LOGIC
+# 8. UPDATE LOGIC (Monitor + DLLs)
 # ==============================================================================
 
-Function Test-ForUpdates {
-    $config = Get-MonitorConfig
-    if (-not $config.autoUpdate) { return }
+Function Test-FileHash ($path, $targetHash) {
+    if (-not (Test-Path $path)) { return $false }
+    $hash = Get-FileHash -Path $path -Algorithm MD5
+    return ($hash.Hash -eq $targetHash)
+}
 
-    $url = "https://api.github.com/repos/$($Global:GithubOwner)/$($Global:GithubRepo)/releases/latest"
-    $TargetFileName = if ($Global:IsBinary) { "EchoVR-Server-Monitor.exe" } else { "EchoVR-Server-Monitor.ps1" }
+Function Update-DLLs {
+    # Helper function to handle the safe download of DLLs
+    # Returns $true if update succeeded, $false if failed/cancelled
     
-    try {
-        $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop
-        $targetAsset = $response.assets | Where-Object { $_.name -eq $TargetFileName } | Select-Object -First 1
+    # URL construction (Adjust 'main' or 'master' if needed)
+    $rawBaseUrl = "https://raw.githubusercontent.com/$Global:GithubOwner/$Global:GithubRepo/main/dll"
+    $urlPNSRAD = "$rawBaseUrl/pnsradgameserver.dll"
+    $urlDBG    = "$rawBaseUrl/dbgcore.dll"
 
-        if (-not $targetAsset) { return }
-
-        $latestTag = $response.tag_name -replace "^v", ""
-        $currentVer = $Global:Version -replace "^v", ""
+    # 1. Safety Check: Running Instances
+    $running = Get-Process -Name $Script:EchoProcessName -ErrorAction SilentlyContinue
+    if ($running) {
+        # Pause Spawning automatically
+        $conf = Get-MonitorConfig
+        $conf.pauseSpawning = $true
+        Save-MonitorConfig $conf
         
-        if ([System.Version]$latestTag -gt [System.Version]$currentVer) {
-            Invoke-Update -downloadUrl $targetAsset.browser_download_url
+        # We must interrupt here to prevent file locking errors
+        $msg = "Cannot update DLLs while instances are running.`n`nSpawning has been PAUSED.`nPlease manually close all EchoVR instances now, then click OK to proceed."
+        $res = [System.Windows.Forms.MessageBox]::Show($msg, "Action Required", [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        
+        if ($res -eq [System.Windows.Forms.DialogResult]::Cancel) { return $false }
+        
+        # Re-check after user clicks OK
+        $running = Get-Process -Name $Script:EchoProcessName -ErrorAction SilentlyContinue
+        if ($running) {
+             [System.Windows.Forms.MessageBox]::Show("Instances are still running. Update aborted.", "Aborted", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+             return $false
         }
+    }
+
+    # 2. Download
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $urlPNSRAD -OutFile $Script:Path_PNSRAD
+        Invoke-WebRequest -Uri $urlDBG -OutFile $Script:Path_DBGCORE
+        
+        [System.Windows.Forms.MessageBox]::Show("DLLs updated successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return $true
     } catch {
-        # Silently fail
+        [System.Windows.Forms.MessageBox]::Show("Failed to download DLLs. Check internet or repo path.`nError: $_", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return $false
     }
 }
 
-Function Invoke-Update ($downloadUrl) {
+Function Test-ForUpdates ($ManualCheck = $false) {
+    $config = Get-MonitorConfig
+    if (-not $config.autoUpdate -and -not $ManualCheck) { return }
+
+    $apiUrl = "https://api.github.com/repos/$($Global:GithubOwner)/$($Global:GithubRepo)/releases/latest"
+    $TargetFileName = if ($Global:IsBinary) { "EchoVR-Server-Monitor.exe" } else { "EchoVR-Server-Monitor.ps1" }
+    
+    $monitorUpdateAvailable = $false
+    $monitorAssetUrl = $null
+    $dllUpdateAvailable = $false
+
+    try {
+        if ($ManualCheck) { [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor }
+        
+        # --- PHASE 1: SILENT CHECKS ---
+
+        # A. Check Monitor Version
+        try {
+            $response = Invoke-RestMethod -Uri $apiUrl -Method Get -ErrorAction Stop
+            $monitorAsset = $response.assets | Where-Object { $_.name -eq $TargetFileName } | Select-Object -First 1
+            
+            if ($monitorAsset) {
+                $latestTag = $response.tag_name -replace "^v", ""
+                $currentVer = $Global:Version -replace "^v", ""
+                if ([System.Version]$latestTag -gt [System.Version]$currentVer) {
+                    $monitorUpdateAvailable = $true
+                    $monitorAssetUrl = $monitorAsset.browser_download_url
+                }
+            }
+        } catch {
+            if ($ManualCheck) { Write-Warning "Could not connect to GitHub API." }
+        }
+
+        # B. Check DLL Hashes
+        $pnsradValid = Test-FileHash $Script:Path_PNSRAD $Global:Hash_PNSRAD
+        $dbgValid = Test-FileHash $Script:Path_DBGCORE $Global:Hash_DBGCORE
+        
+        if (-not $pnsradValid -or -not $dbgValid) {
+            $dllUpdateAvailable = $true
+        }
+
+        # --- PHASE 2: SINGLE USER PROMPT ---
+
+        # Scenario 1: BOTH Monitor and DLLs needed
+        if ($monitorUpdateAvailable -and $dllUpdateAvailable) {
+            $msg = "Updates Available:`n`n1. New Monitor Version ($($response.tag_name))`n2. New Server DLLs (Hash Mismatch)`n`nUpdate ALL components now?"
+            $res = [System.Windows.Forms.MessageBox]::Show($msg, "Critical Updates Found", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Exclamation)
+            
+            if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
+                # Update DLLs first (safest, as Monitor update kills the process)
+                if (Update-DLLs) {
+                    Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl
+                }
+            }
+            return
+        }
+
+        # Scenario 2: Monitor Only
+        if ($monitorUpdateAvailable) {
+            $msg = "New Monitor Version Available: $($response.tag_name)`n`nUpdate now?"
+            $res = [System.Windows.Forms.MessageBox]::Show($msg, "Monitor Update", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            
+            if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl
+            }
+            return
+        }
+
+        # Scenario 3: DLLs Only
+        if ($dllUpdateAvailable) {
+            $msg = "Your local server DLLs do not match the required versions.`n`nUpdate pnsradgameserver.dll and dbgcore.dll now?"
+            $res = [System.Windows.Forms.MessageBox]::Show($msg, "DLL Integrity Check", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            
+            if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Update-DLLs
+            }
+            return
+        }
+
+        # Scenario 4: All Good (Manual Check Only)
+        if ($ManualCheck) {
+            [System.Windows.Forms.MessageBox]::Show("Everything is up to date.`n`nMonitor: v$($Global:Version)`nDLLs: Verified", "Up to Date", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+
+    } catch {
+        if ($ManualCheck) {
+            [System.Windows.Forms.MessageBox]::Show("Update check failed: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    } finally {
+        if ($ManualCheck) { [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default }
+    }
+}
+
+Function Invoke-MonitorUpdate ($downloadUrl) {
     try {
         $currentFile = $Global:ExecutionPath
         $currentDir = [System.IO.Path]::GetDirectoryName($currentFile)
