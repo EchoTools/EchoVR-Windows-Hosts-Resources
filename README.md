@@ -4,5 +4,5 @@ Download EchoVR-Server-Setup.py from the code tab, compile, and run it for a str
 Otherwise, follow the [setup guide](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki/Setup-Guide) to get the same result.
 
 ## Just need the server monitor?
-Download EchoVR-Server-Monitor.ps1 from the releases tab.
+Download the latest server monitor from [releases](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/releases).
 <br>Give the [usage guide](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki/Usage-Guide#server-monitor-usage) a quick skim before starting.
