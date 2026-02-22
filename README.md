@@ -1,7 +1,7 @@
 ## Setting up a new server? 
-Download EchoVR-Server-Setup.py from the code tab, compile, and run it for a streamlined setup experience. <br>(.exe coming soon<sup>tm</sup>)
+Download EchoVR-Server-Setup.py from the code tab, [compile it](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki/Setup-Guide#compiling-the-setup-program), and run it for a streamlined setup experience. <br>(binary release coming soon<sup>tm</sup>)
 
-Otherwise, follow the [setup guide](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki/Setup-Guide) to get the same result.
+Otherwise, follow the [setup guide](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki/Setup-Guide#windows-server-host-setup) to get the same result.
 
 ## Just need the server monitor?
 Download the latest server monitor from [releases](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/releases).
