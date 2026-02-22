@@ -41,7 +41,7 @@ class EchoServerConfig(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("EchoVR Server Setup Tool")
-        self.geometry("490x820") 
+        self.geometry("490x840") 
         self.resizable(False, False)
         
         # State variables
@@ -79,7 +79,8 @@ class EchoServerConfig(ctk.CTk):
                 "checkCGNAT": "Fail",  
                 "hasUnifi": False,
                 "numInstances": "",    
-                "upperPortRange": 6793, 
+                "lowerPort": 6792,
+                "upperPort": 6793, 
                 "chklst_privateNet": False,
                 "chklst_staticIP": False,
                 "chklst_portFwd": False,
@@ -98,6 +99,8 @@ class EchoServerConfig(ctk.CTk):
             self.setup_data["hasUnifi"] = False
         if "chklst_unifiAllowP2P" not in self.setup_data:
             self.setup_data["chklst_unifiAllowP2P"] = False
+        if "lowerPort" not in self.setup_data:
+            self.setup_data["lowerPort"] = 6792
         self.save_setup()
 
     def save_setup(self):
@@ -230,21 +233,7 @@ class EchoServerConfig(ctk.CTk):
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # Buttons
-        self.btn_patch = ctk.CTkButton(main_frame, text="Patch Server", command=self.action_patch_server, font=("Arial", 14), width=200, height=40)
-        self.btn_patch.pack(pady=10)
-        self.update_patch_button() 
-
-        config_text = "Config Ready" if self.setup_data["isConfigured"] else "Configure Server"
-        config_fg_color = "green" if self.setup_data["isConfigured"] else None 
-        
-        self.btn_config = ctk.CTkButton(main_frame, text=config_text, fg_color=config_fg_color, command=self.action_configure_server, font=("Arial", 14), width=200, height=40)
-        self.btn_config.pack(pady=10)
-
-        self.checklist_frame = ctk.CTkFrame(main_frame)
-        self.refresh_checklist() 
-
-        # "Ready to Launch" Message Logic
+        # 1. Calculate readiness state first
         checklist_keys = ["chklst_privateNet", "chklst_staticIP", "chklst_portFwd", "chklst_usedNewConfig", "chklst_hasMonitorScript"]
         if self.setup_data.get("hasUnifi", False):
             checklist_keys.append("chklst_unifiAllowP2P")
@@ -254,8 +243,32 @@ class EchoServerConfig(ctk.CTk):
             checklist_keys.append("chklst_updateExecPolicy")
 
         all_checklist_complete = all(self.setup_data.get(k, False) for k in checklist_keys)
+        is_ready = self.setup_data["isConfigured"] and self.setup_data["isPatched"] and all_checklist_complete
 
-        if self.setup_data["isConfigured"] and self.setup_data["isPatched"] and all_checklist_complete:
+        # 2. Conditionally show the warning label
+        if not is_ready:
+            lbl_warning = ctk.CTkLabel(main_frame, text="Complete all actions before starting your server.", font=("Arial", 15, "bold"), text_color="#FFA500")
+            lbl_warning.pack(pady=(10, 15))
+
+        # Buttons side-by-side
+        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        btn_frame.pack(pady=10)
+
+        self.btn_patch = ctk.CTkButton(btn_frame, text="Patch Server", command=self.action_patch_server, font=("Arial", 14), width=180, height=40)
+        self.btn_patch.pack(side="left", padx=10)
+        self.update_patch_button() 
+
+        config_text = "Config Ready" if self.setup_data["isConfigured"] else "Configure Server"
+        config_fg_color = "green" if self.setup_data["isConfigured"] else None 
+        
+        self.btn_config = ctk.CTkButton(btn_frame, text=config_text, fg_color=config_fg_color, command=self.action_configure_server, font=("Arial", 14), width=180, height=40)
+        self.btn_config.pack(side="right", padx=10)
+
+        self.checklist_frame = ctk.CTkFrame(main_frame)
+        self.refresh_checklist() 
+
+        # 3. Use the pre-calculated state to show the launch buttons
+        if is_ready:
             lbl_ready = ctk.CTkLabel(main_frame, text="Ready to Launch", font=("Arial", 20, "bold"), text_color="green")
             lbl_ready.pack(pady=(20, 5))
             
@@ -278,10 +291,13 @@ class EchoServerConfig(ctk.CTk):
             self.btn_patch.configure(text="Patch Server", fg_color=["#3B8ED0", "#1F6AA5"], state="normal") 
 
     def refresh_checklist(self):
+        lower_port = self.setup_data.get('lowerPort', 6792)
+        upper_port = self.setup_data.get('upperPort', 6793)
+        
         checklist_items_map = [
             ("chklst_privateNet", "Set Network Profile to Private"),
             ("chklst_staticIP", "Create a Static LAN IP for This Machine"),
-            ("chklst_portFwd", f"Forward Ports 6792-{self.setup_data.get('upperPortRange', 6793)} (TCP + UDP)")
+            ("chklst_portFwd", f"Forward Ports {lower_port}-{upper_port} (TCP + UDP)")
         ]
 
         if self.setup_data.get("hasUnifi", False):
@@ -393,6 +409,15 @@ del "%~f0"
         except Exception as e:
             messagebox.showerror("Error", f"Could not run policy update script: {e}")
 
+    def check_and_install_pwsh(self):
+        if shutil.which("pwsh") is None:
+            msg = messagebox.askyesno("PowerShell 7 Required", "PowerShell 7 (pwsh) was not found on your system. It is required to run the monitor script.\n\nWould you like to attempt to install it automatically using Winget?")
+            if msg:
+                try:
+                    subprocess.Popen(["winget", "install", "--id", "Microsoft.Powershell", "--source", "winget", "--silent", "--accept-package-agreements", "--accept-source-agreements"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                except Exception as e:
+                    messagebox.showerror("Install Failed", f"Could not install PowerShell 7 automatically: {e}\n\nPlease install it manually from Microsoft's website.")
+
     def download_monitor_file(self, filename):
             try:
                 target_path = os.path.join(ROOT_DIR, filename)
@@ -420,6 +445,9 @@ del "%~f0"
                     self.setup_data["chklst_hasMonitorScript"] = True
                     self.save_setup()
                     
+                    if filename == MONITOR_SCRIPT:
+                        self.check_and_install_pwsh()
+
                     # If they downloaded the .ps1 and policy isn't bypassed, trigger the UAC prompt immediately
                     if filename == MONITOR_SCRIPT and not getattr(self, 'ps_exec_policy_bypass', True):
                         self.action_update_exec_policy()
@@ -630,6 +658,15 @@ del "%~f0"
         entry_args.pack(anchor="w")
         ctk.CTkLabel(form_frame, text="Raw text appended to serverdb_host. Leave blank unless you know what you're doing!", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
 
+        # Base Port Addition
+        ctk.CTkLabel(form_frame, text="Base Port").pack(anchor="w")
+        saved_lower = self.setup_data.get("lowerPort", 6792)
+        var_lower = tk.IntVar(value=int(saved_lower))
+        spin_lower = tk.Spinbox(form_frame, from_=1024, to=65535, textvariable=var_lower, 
+                                    bg="#343638", fg="white", buttonbackground="#2B2B2B")
+        spin_lower.pack(anchor="w", pady=2)
+        ctk.CTkLabel(form_frame, text="Default is 6792.", font=("Arial", 11), text_color="gray").pack(anchor="w", pady=(0, 5))
+
         ctk.CTkLabel(form_frame, text="Number of Instances (Required)").pack(anchor="w")
         saved_instances = self.setup_data.get("numInstances", 0)
         if saved_instances == "": saved_instances = 0
@@ -675,14 +712,19 @@ del "%~f0"
             if current_instances == "": current_instances = 0
             current_instances = int(current_instances)
 
-            if current_instances != var_instances.get():
+            current_lower = self.setup_data.get("lowerPort", 6792)
+            
+            # Port forward needs repeating if they changed their counts or ports
+            if current_instances != var_instances.get() or current_lower != var_lower.get():
                 self.setup_data["chklst_portFwd"] = False 
 
             num_instances = var_instances.get()
-            upper_port = 6792 + (num_instances * 2) - 1
+            lower_port = var_lower.get()
+            upper_port = lower_port + (num_instances * 2) - 1
             
             self.setup_data["numInstances"] = num_instances
-            self.setup_data["upperPortRange"] = upper_port
+            self.setup_data["lowerPort"] = lower_port
+            self.setup_data["upperPort"] = upper_port
             self.setup_data["isConfigured"] = True
             self.save_setup()
 

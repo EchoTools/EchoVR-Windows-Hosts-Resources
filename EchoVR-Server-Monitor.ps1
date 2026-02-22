@@ -5,6 +5,7 @@
 ###################################################################
 
 # Changes 
+# v3.2.0 - Added Base Port config, Auto-Archive, and Auto-Purge scheduling for logs.
 # v3.1.0 - Added Open Echo Folder, Delay fields in seconds, EchoVRCE Portal button.
 # v3.0.0 - Added Port/API management, DLL updates & hash checks. Removed Stat Tracker, Logfile Error Parsing.
 # v2.1.1 - Auto-cleanup of setup_tracker.ps1 after installation.
@@ -12,14 +13,13 @@
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "3.1.0"
+$Global:Version = "3.2.0"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
 # Port Management & Tracking
 # Structure: @{ PID = @{ GS=1234; API=1235 } }
 $Global:PortMap = @{}
-$Global:BasePort = 6792
 
 # DLL Hash Targets (MD5)
 $Global:Hash_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
@@ -27,6 +27,7 @@ $Global:Hash_DBGCORE = "7E7998C29A1E588AF659E19C3DD27265"
 
 $Global:NotifiedPids = @{}
 $Global:LinkCodeActive = $false
+$Global:LastLogMaintenanceDay = -1
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -80,6 +81,7 @@ $SetupFile = Join-Path $DashboardDir "setup.json"
 $MonitorFile = Join-Path $DashboardDir "monitor.json"
 $LocalConfigPath = Join-Path $ScriptRoot "_local\config.json"
 $LogPath = Join-Path $ScriptRoot "_local\r14logs"
+$LogPathOld = Join-Path $LogPath "old"
 
 # DLL Paths
 $Path_PNSRAD = Join-Path $ScriptRoot "bin\win10\pnsradgameserver.dll"
@@ -98,6 +100,7 @@ if (-not (Test-Path $EchoExePath)) {
 }
 
 if (-not (Test-Path $DashboardDir)) { New-Item -ItemType Directory -Path $DashboardDir -Force | Out-Null }
+if (-not (Test-Path $LogPathOld)) { New-Item -ItemType Directory -Path $LogPathOld -Force | Out-Null }
 
 # ==============================================================================
 # 3. CONFIGURATION MANAGEMENT
@@ -107,6 +110,7 @@ Function Get-MonitorConfig {
     if (-not (Test-Path $MonitorFile)) {
         $defaultConfig = @{
             amountOfInstances = 1
+            basePort = 6792
             delayExiting = 2000
             delayProcessCheck = 5000
             delayKillStuck = 20000
@@ -116,10 +120,14 @@ Function Get-MonitorConfig {
             suppressSetupWarning = $false
             autoUpdate = $true
             pauseSpawning = $false
+            autoArchive = $true
+            autoPurge = $false
+            purgeInterval = "Week"
         }
         if (Test-Path $SetupFile) {
             $dashData = Get-Content $SetupFile -Raw | ConvertFrom-Json
             if ($dashData.numInstances) { $defaultConfig.amountOfInstances = $dashData.numInstances }
+            if ($dashData.lowerPort) { $defaultConfig.basePort = $dashData.lowerPort }
         }
         $defaultConfig | ConvertTo-Json -Depth 4 | Set-Content $MonitorFile
         return $defaultConfig
@@ -129,14 +137,12 @@ Function Get-MonitorConfig {
     $config = Get-Content $MonitorFile -Raw | ConvertFrom-Json
     $saveNeeded = $false
 
-    if ($null -eq $config.autoUpdate) {
-        $config | Add-Member -MemberType NoteProperty -Name "autoUpdate" -Value $true
-        $saveNeeded = $true
-    }
-    if ($null -eq $config.pauseSpawning) {
-        $config | Add-Member -MemberType NoteProperty -Name "pauseSpawning" -Value $false
-        $saveNeeded = $true
-    }
+    if ($null -eq $config.basePort) { $config | Add-Member -MemberType NoteProperty -Name "basePort" -Value 6792; $saveNeeded = $true }
+    if ($null -eq $config.autoUpdate) { $config | Add-Member -MemberType NoteProperty -Name "autoUpdate" -Value $true; $saveNeeded = $true }
+    if ($null -eq $config.pauseSpawning) { $config | Add-Member -MemberType NoteProperty -Name "pauseSpawning" -Value $false; $saveNeeded = $true }
+    if ($null -eq $config.autoArchive) { $config | Add-Member -MemberType NoteProperty -Name "autoArchive" -Value $false; $saveNeeded = $true }
+    if ($null -eq $config.autoPurge) { $config | Add-Member -MemberType NoteProperty -Name "autoPurge" -Value $false; $saveNeeded = $true }
+    if ($null -eq $config.purgeInterval) { $config | Add-Member -MemberType NoteProperty -Name "purgeInterval" -Value "1 Week"; $saveNeeded = $true }
 
     if ($saveNeeded) { Save-MonitorConfig $config }
     return $config
@@ -151,7 +157,7 @@ Function Update-ExternalConfigs ($numInstances) {
     if (Test-Path $SetupFile) {
         $dashData = Get-Content $SetupFile -Raw | ConvertFrom-Json
         $dashData.numInstances = [int]$numInstances
-        $dashData.upperPortRange = 6792 + ([int]$numInstances * 2) # Adjusted for GS+API pairs
+        $dashData.upperPort = $Global:BasePort + ([int]$numInstances * 2) # Adjusted for GS+API pairs
         $dashData | ConvertTo-Json -Depth 4 | Set-Content $SetupFile
     }
 }
@@ -188,8 +194,68 @@ Function Switch-StartupShortcut ($enable) {
     }
 }
 
+# Initial Config load for Global Variables
+$initConfig = Get-MonitorConfig
+$Global:BasePort = $initConfig.basePort
+
 # ==============================================================================
-# 4. GUI: CONFIGURATION WINDOW
+# 4. LOG MAINTENANCE LOGIC (Auto-Archive & Purge)
+# ==============================================================================
+
+Function Invoke-LogMaintenance {
+    $config = Get-MonitorConfig
+    $now = Get-Date
+
+    # Auto-Archive Logic
+    if ($config.autoArchive) {
+        # Find .log files older than 1 day in \r14logs\ and \r14logs\old\
+        $targetLogs = @(Get-ChildItem -Path $LogPath -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
+        $targetLogs += @(Get-ChildItem -Path $LogPathOld -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
+        
+        if ($targetLogs) {
+            foreach ($log in $targetLogs) {
+                # Determine week group based on file LastWriteTime (Sunday to Saturday)
+                $logDate = $log.LastWriteTime
+                $offset = [int]$logDate.DayOfWeek
+                $startOfWeek = $logDate.AddDays(-$offset).Date
+                $endOfWeek = $startOfWeek.AddDays(6).Date
+                
+                $folderName = "Week_$($startOfWeek.ToString('MMM_dd'))_to_$($endOfWeek.ToString('MMM_dd_yyyy'))"
+                $weekFolder = Join-Path $LogPathOld $folderName
+                
+                # Create the folder and set NTFS compression attribute automatically via compact.exe
+                if (-not (Test-Path $weekFolder)) {
+                    New-Item -ItemType Directory -Path $weekFolder -Force | Out-Null
+                    Start-Process -FilePath "compact.exe" -ArgumentList "/c /i /q `"$weekFolder`"" -WindowStyle Hidden -Wait
+                }
+                
+                Move-Item -Path $log.FullName -Destination $weekFolder -Force
+            }
+        }
+    }
+
+    # Auto-Purge Logic
+    if ($config.autoPurge) {
+        $daysToKeep = 7
+        switch ($config.purgeInterval) {
+            "Day"     { $daysToKeep = 1 }
+            "3 Days"  { $daysToKeep = 3 }
+            "Week"    { $daysToKeep = 7 }
+            "Month"   { $daysToKeep = 30 }
+        }
+
+        $cutoffDate = $now.AddDays(-$daysToKeep)
+        
+        # Purge any file or directory in \old\ older than the cutoff
+        $oldItems = Get-ChildItem -Path $LogPathOld | Where-Object { $_.LastWriteTime -lt $cutoffDate }
+        foreach ($item in $oldItems) {
+            Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# ==============================================================================
+# 5. GUI: CONFIGURATION WINDOW
 # ==============================================================================
 
 Function Show-ConfigWindow {
@@ -197,7 +263,7 @@ Function Show-ConfigWindow {
     
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Server Monitor Configuration"
-    $form.Size = New-Object System.Drawing.Size(435, 600)
+    $form.Size = New-Object System.Drawing.Size(445, 600)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -217,6 +283,19 @@ Function Show-ConfigWindow {
     $txtInst.Text = "$($monitorData.amountOfInstances)"
     $form.Controls.Add($txtInst)
     
+    # --- Base Port ---
+    $y += $pad
+    $lblPort = New-Object System.Windows.Forms.Label
+    $lblPort.Text = "Base Port:"
+    $lblPort.Location = New-Object System.Drawing.Point(20, $y)
+    $lblPort.AutoSize = $true
+    $form.Controls.Add($lblPort)
+
+    $txtPort = New-Object System.Windows.Forms.TextBox
+    $txtPort.Location = New-Object System.Drawing.Point(250, ($y - 3))
+    $txtPort.Text = "$($monitorData.basePort)"
+    $form.Controls.Add($txtPort)
+
     $y += $pad
     $lblNote = New-Object System.Windows.Forms.Label
     $lblNote.Text = "Default delay values can usually be left alone." 
@@ -345,7 +424,7 @@ Function Show-ConfigWindow {
     $txtArgs.Text = "$($monitorData.additionalArgs)"
     $grpAdv.Controls.Add($txtArgs)
 
-    # --- New Config Options (Moved from Tray) ---
+    # --- New Config Options (Moved from Tray + Log Automation) ---
     $y += 190
 
     $chkStartup = New-Object System.Windows.Forms.CheckBox
@@ -355,6 +434,13 @@ Function Show-ConfigWindow {
     $chkStartup.Checked = (Test-Path $ShortcutPath)
     $form.Controls.Add($chkStartup)
 
+    $chkArchive = New-Object System.Windows.Forms.CheckBox
+    $chkArchive.Text = "Auto-Archive Logs"
+    $chkArchive.Location = New-Object System.Drawing.Point(215, $y)
+    $chkArchive.AutoSize = $true
+    $chkArchive.Checked = $monitorData.autoArchive
+    $form.Controls.Add($chkArchive)
+
     $y += 25
     $chkAutoUpdate = New-Object System.Windows.Forms.CheckBox
     $chkAutoUpdate.Text = "Enable Auto-Update"
@@ -362,6 +448,24 @@ Function Show-ConfigWindow {
     $chkAutoUpdate.AutoSize = $true
     $chkAutoUpdate.Checked = $monitorData.autoUpdate
     $form.Controls.Add($chkAutoUpdate)
+
+    $chkPurge = New-Object System.Windows.Forms.CheckBox
+    $chkPurge.Text = "Auto-Purge Every:"
+    $chkPurge.Location = New-Object System.Drawing.Point(215, $y)
+    $chkPurge.AutoSize = $true
+    $chkPurge.Checked = $monitorData.autoPurge
+    $form.Controls.Add($chkPurge)
+
+    $cmbPurge = New-Object System.Windows.Forms.ComboBox
+    $cmbPurge.Location = New-Object System.Drawing.Point(345, ($y - 2))
+    $cmbPurge.Size = New-Object System.Drawing.Size(70, 20)
+    $cmbPurge.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    @("Day", "3 Days", "Week", "Month") | ForEach-Object { $cmbPurge.Items.Add($_) | Out-Null }
+    $cmbPurge.SelectedItem = $monitorData.purgeInterval
+    $cmbPurge.Enabled = $chkPurge.Checked
+    $form.Controls.Add($cmbPurge)
+
+    $chkPurge.Add_CheckedChanged({ $cmbPurge.Enabled = $chkPurge.Checked })
 
     # --- Bottom Buttons ---
     $y += 35
@@ -394,6 +498,12 @@ Function Show-ConfigWindow {
                 $txtInst.Focus()
                 return
             }
+
+            if ([int]$txtPort.Text -lt 1 -or [int]$txtPort.Text -gt 65535) {
+                [System.Windows.Forms.MessageBox]::Show("Please enter a valid base port.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                $txtPort.Focus()
+                return
+            }
             
             # Verify the delay inputs are valid numbers before closing
             $null = [double]$txtExit.Text
@@ -403,7 +513,7 @@ Function Show-ConfigWindow {
             $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
             $form.Close()
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Please enter valid numbers for the delay settings.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            [System.Windows.Forms.MessageBox]::Show("Please enter valid numbers for the required fields.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         }
     })
     $form.Controls.Add($btnSave)
@@ -416,6 +526,7 @@ Function Show-ConfigWindow {
     $btnRestore.Add_Click({
         # Reset UI to default values without saving yet (Defaults presented in seconds)
         $txtInst.Text = "1"
+        $txtPort.Text = "6792"
         $txtExit.Text = "2"
         $txtCheck.Text = "5"
         $txtKill.Text = "20"
@@ -424,6 +535,9 @@ Function Show-ConfigWindow {
         $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup"
         $chkStartup.Checked = $true
         $chkAutoUpdate.Checked = $true
+        $chkArchive.Checked = $false
+        $chkPurge.Checked = $false
+        $cmbPurge.SelectedItem = "1 Week"
     })
     $form.Controls.Add($btnRestore)
 
@@ -453,6 +567,7 @@ Function Show-ConfigWindow {
         $tStep = if ($rbComp.Checked) { 180 } else { 120 }
         
         $monitorData.amountOfInstances = $numInst
+        $monitorData.basePort = [int]$txtPort.Text
         $monitorData.delayExiting = [int]([double]$txtExit.Text * 1000)
         $monitorData.delayProcessCheck = [int]([double]$txtCheck.Text * 1000)
         $monitorData.delayKillStuck = [int]([double]$txtKill.Text * 1000)
@@ -460,6 +575,11 @@ Function Show-ConfigWindow {
         $monitorData.timeStep = $tStep
         $monitorData.additionalArgs = $txtArgs.Text
         $monitorData.autoUpdate = $chkAutoUpdate.Checked
+        $monitorData.autoArchive = $chkArchive.Checked
+        $monitorData.autoPurge = $chkPurge.Checked
+        $monitorData.purgeInterval = $cmbPurge.SelectedItem
+
+        $Global:BasePort = $monitorData.basePort
 
         # Handle Startup Shortcut immediately
         Switch-StartupShortcut $chkStartup.Checked
@@ -472,12 +592,11 @@ Function Show-ConfigWindow {
 }
 
 # ==============================================================================
-# 5. PORT MANAGEMENT
+# 6. PORT MANAGEMENT
 # ==============================================================================
 
 Function Get-AvailablePortPair {
-    # Start checking from BasePort
-    # We step by 2: (6792,6793), (6794,6795), etc.
+    # Start checking from dynamically loaded BasePort
     $maxChecks = 100 
     
     for ($i = 0; $i -lt $maxChecks; $i++) {
@@ -501,7 +620,7 @@ Function Get-AvailablePortPair {
 }
 
 # ==============================================================================
-# 6. SYSTEM TRAY & MENU
+# 7. SYSTEM TRAY & MENU
 # ==============================================================================
 
 $ContextMenuStrip = New-Object System.Windows.Forms.ContextMenuStrip
@@ -579,7 +698,7 @@ $NotifyIcon.ContextMenuStrip = $ContextMenuStrip
 $NotifyIcon.Visible = $true
 
 # ==============================================================================
-# 7. MONITORING LOGIC
+# 8. MONITORING LOGIC
 # ==============================================================================
 
 $MonitorTimer = New-Object System.Windows.Forms.Timer
@@ -688,6 +807,14 @@ Function Search-LogForInfo ($procId) {
 $MonitorAction = {
     $config = Get-MonitorConfig
     $MonitorTimer.Interval = $config.delayProcessCheck
+    $Global:BasePort = $config.basePort
+
+    # --- AUTO-MAINTENANCE TASKS (Runs on initial startup and once every midnight) ---
+    $currentDay = (Get-Date).DayOfYear
+    if ($Global:LastLogMaintenanceDay -ne $currentDay) {
+        Invoke-LogMaintenance
+        $Global:LastLogMaintenanceDay = $currentDay
+    }
 
     # Update Pause Menu Item based on config read
     if ($MenuItemPause.Checked -ne $config.pauseSpawning) {
@@ -795,7 +922,7 @@ $MonitorAction = {
 $MonitorTimer.Add_Tick($MonitorAction)
 
 # ==============================================================================
-# 8. UPDATE LOGIC (Monitor + DLLs)
+# 9. UPDATE LOGIC (Monitor + DLLs)
 # ==============================================================================
 
 Function Test-FileHash ($path, $targetHash) {
@@ -985,7 +1112,7 @@ del "%~f0"
 }
 
 # ==============================================================================
-# 9. EXECUTION
+# 10. EXECUTION
 # ==============================================================================
 
 # Check for updates synchronously before showing the tray
