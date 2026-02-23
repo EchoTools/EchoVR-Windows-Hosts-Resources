@@ -5,15 +5,15 @@
 ###################################################################
 
 # Changes 
+# v3.2.1 - Fixed log archiving, added 'Clean up logs now' tray button.
 # v3.2.0 - Added Base Port config, Auto-Archive, and Auto-Purge scheduling for logs.
 # v3.1.0 - Added Open Echo Folder, Delay fields in seconds, EchoVRCE Portal button.
 # v3.0.0 - Added Port/API management, DLL updates & hash checks. Removed Stat Tracker, Logfile Error Parsing.
-# v2.1.1 - Auto-cleanup of setup_tracker.ps1 after installation.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "3.2.0"
+$Global:Version = "3.2.1"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
@@ -140,9 +140,9 @@ Function Get-MonitorConfig {
     if ($null -eq $config.basePort) { $config | Add-Member -MemberType NoteProperty -Name "basePort" -Value 6792; $saveNeeded = $true }
     if ($null -eq $config.autoUpdate) { $config | Add-Member -MemberType NoteProperty -Name "autoUpdate" -Value $true; $saveNeeded = $true }
     if ($null -eq $config.pauseSpawning) { $config | Add-Member -MemberType NoteProperty -Name "pauseSpawning" -Value $false; $saveNeeded = $true }
-    if ($null -eq $config.autoArchive) { $config | Add-Member -MemberType NoteProperty -Name "autoArchive" -Value $false; $saveNeeded = $true }
+    if ($null -eq $config.autoArchive) { $config | Add-Member -MemberType NoteProperty -Name "autoArchive" -Value $true; $saveNeeded = $true }
     if ($null -eq $config.autoPurge) { $config | Add-Member -MemberType NoteProperty -Name "autoPurge" -Value $false; $saveNeeded = $true }
-    if ($null -eq $config.purgeInterval) { $config | Add-Member -MemberType NoteProperty -Name "purgeInterval" -Value "1 Week"; $saveNeeded = $true }
+    if ($null -eq $config.purgeInterval) { $config | Add-Member -MemberType NoteProperty -Name "purgeInterval" -Value "Week"; $saveNeeded = $true }
 
     if ($saveNeeded) { Save-MonitorConfig $config }
     return $config
@@ -203,55 +203,111 @@ $Global:BasePort = $initConfig.basePort
 # ==============================================================================
 
 Function Invoke-LogMaintenance {
-    $config = Get-MonitorConfig
-    $now = Get-Date
+    param([switch]$Manual)
+    
+    # Prevent overlapping jobs by grabbing the jobs by name, then filtering for the running state
+    $runningJobs = Get-Job -Name "LogMaintenance_Manual", "LogMaintenance_Auto" -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' }
+    
+    if ($runningJobs) {
+        if ($Manual) {
+            [System.Windows.Forms.MessageBox]::Show("Log maintenance is already running. Please wait.", "In Progress", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+        return
+    }
 
-    # Auto-Archive Logic
-    if ($config.autoArchive) {
-        # Find .log files older than 1 day in \r14logs\ and \r14logs\old\
-        $targetLogs = @(Get-ChildItem -Path $LogPath -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
-        $targetLogs += @(Get-ChildItem -Path $LogPathOld -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
-        
-        if ($targetLogs) {
-            foreach ($log in $targetLogs) {
-                # Determine week group based on file LastWriteTime (Sunday to Saturday)
-                $logDate = $log.LastWriteTime
-                $offset = [int]$logDate.DayOfWeek
-                $startOfWeek = $logDate.AddDays(-$offset).Date
-                $endOfWeek = $startOfWeek.AddDays(6).Date
+    # Grab the config and paths from the main script scope to pass into the background job
+    $config = Get-MonitorConfig
+    $jobArgs = @($config, $LogPath, $LogPathOld, [bool]$Manual)
+    
+    # Give the job a specific name so we know if it was triggered manually
+    $jobName = if ($Manual) { "LogMaintenance_Manual" } else { "LogMaintenance_Auto" }
+
+    Start-Job -Name $jobName -ArgumentList $jobArgs -ScriptBlock {
+        param($jobConfig, $jobLogPath, $jobLogPathOld, $IsManual)
+
+        $now = Get-Date
+
+        # Auto-Archive Logic
+        if ($jobConfig.autoArchive -or $IsManual) {
+            if ($IsManual) {
+                $targetLogs = @(Get-ChildItem -Path $jobLogPath -Filter "*.log" -File -ErrorAction SilentlyContinue)
+                $targetLogs += @(Get-ChildItem -Path $jobLogPathOld -Filter "*.log" -File -ErrorAction SilentlyContinue)
+            } else {
+                $targetLogs = @(Get-ChildItem -Path $jobLogPath -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
+                $targetLogs += @(Get-ChildItem -Path $jobLogPathOld -Filter "*.log" -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) })
+            }
+            
+            if ($targetLogs) {
+                # Create a hashtable to keep track of which folders receive files during this run
+                $foldersToCompress = @{} 
                 
-                $folderName = "Week_$($startOfWeek.ToString('MMM_dd'))_to_$($endOfWeek.ToString('MMM_dd_yyyy'))"
-                $weekFolder = Join-Path $LogPathOld $folderName
-                
-                # Create the folder and set NTFS compression attribute automatically via compact.exe
-                if (-not (Test-Path $weekFolder)) {
-                    New-Item -ItemType Directory -Path $weekFolder -Force | Out-Null
-                    Start-Process -FilePath "compact.exe" -ArgumentList "/c /i /q `"$weekFolder`"" -WindowStyle Hidden -Wait
+                foreach ($log in $targetLogs) {
+                    $logDate = $log.LastWriteTime
+                    $offset = [int]$logDate.DayOfWeek
+                    $startOfWeek = $logDate.AddDays(-$offset).Date
+                    $endOfWeek = $startOfWeek.AddDays(6).Date
+                    
+                    $folderName = "Week_$($startOfWeek.ToString('MMM_dd'))_to_$($endOfWeek.ToString('MMM_dd_yyyy'))"
+                    $weekFolder = Join-Path $jobLogPathOld $folderName
+                    
+                    # Create the folder if missing
+                    if (-not (Test-Path -LiteralPath $weekFolder)) {
+                        New-Item -ItemType Directory -Path $weekFolder -Force | Out-Null
+                    }
+                    
+                    # Register this folder to be batched at the end
+                    $foldersToCompress[$weekFolder] = $true
+                    
+                    $destPath = Join-Path $weekFolder $log.Name
+                    
+                    if ($log.Directory.FullName -ne $weekFolder) {
+                        try {
+                            Move-Item -LiteralPath $log.FullName -Destination $destPath -Force -ErrorAction Stop
+                        } catch {
+                            # File is likely locked by an active process, silently skip
+                        }
+                    }
                 }
                 
-                Move-Item -Path $log.FullName -Destination $weekFolder -Force
+                # Batch Compress: Run compact.exe only on the folders that were touched
+                foreach ($folder in $foldersToCompress.Keys) {
+                    # 1. Compress the folder itself (so Windows gives it the blue arrows icon)
+                    Start-Process -FilePath "compact.exe" -ArgumentList "/c /i /q `"$folder`"" -WindowStyle Hidden -Wait
+                    
+                    # 2. Compress all files inside the folder in one massive batch
+                    Start-Process -FilePath "compact.exe" -ArgumentList "/c /i /q `"$folder\*`"" -WindowStyle Hidden -Wait
+                }
             }
         }
-    }
 
-    # Auto-Purge Logic
-    if ($config.autoPurge) {
-        $daysToKeep = 7
-        switch ($config.purgeInterval) {
-            "Day"     { $daysToKeep = 1 }
-            "3 Days"  { $daysToKeep = 3 }
-            "Week"    { $daysToKeep = 7 }
-            "Month"   { $daysToKeep = 30 }
-        }
+        # Auto-Purge Logic
+        if ($jobConfig.autoPurge) {
+            $daysToKeep = 7
+            switch ($jobConfig.purgeInterval) {
+                "Day"     { $daysToKeep = 1 }
+                "3 Days"  { $daysToKeep = 3 }
+                "Week"    { $daysToKeep = 7 }
+                "Month"   { $daysToKeep = 30 }
+            }
 
-        $cutoffDate = $now.AddDays(-$daysToKeep)
-        
-        # Purge any file or directory in \old\ older than the cutoff
-        $oldItems = Get-ChildItem -Path $LogPathOld | Where-Object { $_.LastWriteTime -lt $cutoffDate }
-        foreach ($item in $oldItems) {
-            Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            $cutoffDate = $now.AddDays(-$daysToKeep)
+            
+            # 1. Purge specific files older than the cutoff, regardless of what folder they are in
+            $oldFiles = Get-ChildItem -LiteralPath $jobLogPathOld -File -Recurse -ErrorAction SilentlyContinue | 
+                        Where-Object { $_.LastWriteTime -lt $cutoffDate }
+            
+            foreach ($file in $oldFiles) {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            }
+
+            # 2. Clean up empty directories safely
+            # Sorting descending ensures deep subfolders are processed before their parents
+            $allDirs = Get-ChildItem -LiteralPath $jobLogPathOld -Directory -Recurse -ErrorAction SilentlyContinue | Sort-Object -Property FullName -Descending
+            foreach ($dir in $allDirs) {
+                Remove-Item -LiteralPath $dir.FullName -Force -ErrorAction SilentlyContinue
+            }
         }
-    }
+    } | Out-Null
 }
 
 # ==============================================================================
@@ -298,7 +354,7 @@ Function Show-ConfigWindow {
 
     $y += $pad
     $lblNote = New-Object System.Windows.Forms.Label
-    $lblNote.Text = "Default delay values can usually be left alone." 
+    $lblNote.Text = "Default values can usually be left alone." 
     $lblNote.Location = New-Object System.Drawing.Point(20, $y)
     $lblNote.ForeColor = [System.Drawing.Color]::Gray
     $lblNote.AutoSize = $true
@@ -307,7 +363,7 @@ Function Show-ConfigWindow {
     # --- Delays (Converted to Seconds for UI) ---
     $y += $pad
     $lblExit = New-Object System.Windows.Forms.Label
-    $lblExit.Text = "Delay Exiting (sec):"
+    $lblExit.Text = "Exit Delay (sec):"
     $lblExit.Location = New-Object System.Drawing.Point(20, $y)
     $lblExit.AutoSize = $true
     $form.Controls.Add($lblExit)
@@ -319,7 +375,7 @@ Function Show-ConfigWindow {
 
     $y += $pad
     $lblCheck = New-Object System.Windows.Forms.Label
-    $lblCheck.Text = "Delay Process Check (sec):"
+    $lblCheck.Text = "Perform Monitoring Actions Every (sec):"
     $lblCheck.Location = New-Object System.Drawing.Point(20, $y)
     $lblCheck.AutoSize = $true
     $form.Controls.Add($lblCheck)
@@ -331,7 +387,7 @@ Function Show-ConfigWindow {
 
     $y += $pad
     $lblKill = New-Object System.Windows.Forms.Label
-    $lblKill.Text = "Delay Kill if Stuck (sec):"
+    $lblKill.Text = "Stuck Process Kill Delay (sec):"
     $lblKill.Location = New-Object System.Drawing.Point(20, $y)
     $lblKill.AutoSize = $true
     $form.Controls.Add($lblKill)
@@ -360,7 +416,7 @@ Function Show-ConfigWindow {
 
     # Threads
     $lblThreads = New-Object System.Windows.Forms.Label
-    $lblThreads.Text = "Num Task Threads:"
+    $lblThreads.Text = "Threads per Instance:"
     $lblThreads.Location = New-Object System.Drawing.Point(15, 30)
     $lblThreads.AutoSize = $true
     $grpAdv.Controls.Add($lblThreads)
@@ -392,7 +448,7 @@ Function Show-ConfigWindow {
 
     # Timestep
     $lblTime = New-Object System.Windows.Forms.Label
-    $lblTime.Text = "Timestep:"
+    $lblTime.Text = "Server Timestep:"
     $lblTime.Location = New-Object System.Drawing.Point(15, 65)
     $lblTime.AutoSize = $true
     $grpAdv.Controls.Add($lblTime)
@@ -535,9 +591,9 @@ Function Show-ConfigWindow {
         $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup"
         $chkStartup.Checked = $true
         $chkAutoUpdate.Checked = $true
-        $chkArchive.Checked = $false
+        $chkArchive.Checked = $true
         $chkPurge.Checked = $false
-        $cmbPurge.SelectedItem = "1 Week"
+        $cmbPurge.SelectedItem = "Week"
     })
     $form.Controls.Add($btnRestore)
 
@@ -657,13 +713,21 @@ $ContextMenuStrip.Items.Add($MenuItemUpdate) | Out-Null
 $MenuItemPortal = New-Object System.Windows.Forms.ToolStripMenuItem
 $MenuItemPortal.Text = "Open EchoVRCE Portal"
 $MenuItemPortal.Add_Click({
-    Start-Process "https://echovrce.com/portal/"
+    Start-Process "https://echovrce.com/"
 })
 $ContextMenuStrip.Items.Add($MenuItemPortal) | Out-Null
 
+# 6. CLEAN UP LOGS NOW
+$MenuItemCleanLogs = New-Object System.Windows.Forms.ToolStripMenuItem
+$MenuItemCleanLogs.Text = "Clean up logs now"
+$MenuItemCleanLogs.Add_Click({
+    Invoke-LogMaintenance -Manual
+})
+$ContextMenuStrip.Items.Add($MenuItemCleanLogs) | Out-Null
+
 $ContextMenuStrip.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-# 6. PAUSE SPAWNING
+# 7. PAUSE SPAWNING
 $MenuItemPause = New-Object System.Windows.Forms.ToolStripMenuItem
 $MenuItemPause.Text = "Pause Server Spawning"
 $MenuItemPause.CheckOnClick = $true
@@ -681,7 +745,7 @@ $MenuItemPause.Add_Click({
 })
 $ContextMenuStrip.Items.Add($MenuItemPause) | Out-Null
 
-# 7. EXIT
+# 8. EXIT
 $MenuItemExit = New-Object System.Windows.Forms.ToolStripMenuItem
 $MenuItemExit.Text = "Exit"
 $MenuItemExit.Add_Click({
@@ -706,7 +770,20 @@ $MonitorTimer.Interval = 3000
 
 # Helper to clean up background jobs
 Function Clear-Jobs {
-    Get-Job -State Completed | Remove-Job
+    $completedJobs = Get-Job -State Completed
+    $showNotification = $false
+    
+    foreach ($job in $completedJobs) {
+        # Only show the notification if the user clicked the button
+        if ($job.Name -eq "LogMaintenance_Manual") {
+            $showNotification = $true
+        }
+        Remove-Job -Job $job -Force
+    }
+    
+    if ($showNotification) {
+        $NotifyIcon.ShowBalloonTip(3000, "Log Maintenance", "Manual log cleanup has successfully completed.", [System.Windows.Forms.ToolTipIcon]::Info)
+    }
 }
 
 # 1. WATCHDOG & LOG SCANNER
@@ -733,9 +810,9 @@ Function Start-Watchdog ($procId, $timeoutMs) {
                             break 
                         }
 
-                        if (Test-Path $logPath) {
+                        if (Test-Path -LiteralPath $logPath) {
                             try {
-                                $currentLine = Get-Content -Path $logPath -Tail 1 -ErrorAction Stop
+                                $currentLine = Get-Content -LiteralPath $logPath -Tail 1 -ErrorAction Stop
                                 if ($initialLine -ne $currentLine) { break }
                             } catch {}
                         }
@@ -809,7 +886,7 @@ $MonitorAction = {
     $MonitorTimer.Interval = $config.delayProcessCheck
     $Global:BasePort = $config.basePort
 
-    # --- AUTO-MAINTENANCE TASKS (Runs on initial startup and once every midnight) ---
+    # --- AUTO-MAINTENANCE TASKS (Run once every midnight) ---
     $currentDay = (Get-Date).DayOfYear
     if ($Global:LastLogMaintenanceDay -ne $currentDay) {
         Invoke-LogMaintenance
@@ -1102,6 +1179,10 @@ del "%~f0"
 "@
         Set-Content -Path $batchPath -Value $batchContent
 
+        # Trigger the notification and pause briefly so it can be seen before the app exits
+        $NotifyIcon.ShowBalloonTip(4000, "Monitor Update", "New version downloaded! Restarting to apply updates...", [System.Windows.Forms.ToolTipIcon]::Info)
+        Start-Sleep -Seconds 3
+
         Start-Process -FilePath $batchPath -WindowStyle Hidden
         $NotifyIcon.Visible = $false
         [System.Windows.Forms.Application]::Exit()
@@ -1115,7 +1196,7 @@ del "%~f0"
 # 10. EXECUTION
 # ==============================================================================
 
-# Check for updates synchronously before showing the tray
+# Check for updates synchronously and clean up logs
 Test-ForUpdates
 
 $MonitorTimer.Start()
