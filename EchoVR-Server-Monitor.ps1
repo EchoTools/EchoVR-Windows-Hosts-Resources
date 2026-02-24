@@ -593,7 +593,7 @@ Function Show-ConfigWindow {
         $txtPort.Text = "6792"
         $txtThreads.Text = "2"
         $rbStd.Checked = $true
-        $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup"
+        $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup -exitnoerror"
         
         $txtExit.Text = "2"
         $txtCheck.Text = "5"
