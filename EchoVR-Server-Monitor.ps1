@@ -5,22 +5,20 @@
 ###################################################################
 
 # Changes 
+# v4.0.1 - Hotfix for incorrect launch args, removed trigger-happy stuck process kill code.
 # v4.0.0 - Revamped config, unified log/update scheduling.
 # v3.2.1 - Fixed log archiving, added 'Clean up logs now' tray button.
-# v3.2.0 - Added Base Port config, Auto-Archive, and Auto-Purge scheduling for logs.
-# v3.1.0 - Added Open Echo Folder, Delay fields in seconds, EchoVRCE Portal button.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "4.0.0"
+$Global:Version = "4.0.1"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
 # Port Management & Tracking
-# Structure: @{ PID = @{ GS=1234; API=1235; LogPath="..."; LastLogLine="..."; LastLogTime=[datetime] } }
+# Structure: @{ PID = @{ GS=1234; API=1235; LogPath="..." } }
 $Global:PortMap = @{}
-$Global:PendingKills = @{}
 
 # DLL Hash Targets (MD5)
 $Global:Hash_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
@@ -120,9 +118,7 @@ Function Get-MonitorConfig {
         $defaultConfig = @{
             amountOfInstances = 1
             basePort = 6792
-            delayExiting = 2000
             delayProcessCheck = 5000
-            delayKillStuck = 20000
             numTaskThreads = 2
             timeStep = 120
             additionalArgs = "-server -headless -noovr -fixedtimestep -nosymbollookup"
@@ -407,45 +403,21 @@ Function Show-ConfigWindow {
     $tabMonitor.Text = "Monitor Settings"
     $tabControl.TabPages.Add($tabMonitor)
 
-    $lblExit = New-Object System.Windows.Forms.Label
-    $lblExit.Text = "Exit Delay (sec):"
-    $lblExit.Location = New-Object System.Drawing.Point(20, 25)
-    $lblExit.AutoSize = $true
-    $tabMonitor.Controls.Add($lblExit)
-
-    $txtExit = New-Object System.Windows.Forms.TextBox
-    $txtExit.Location = New-Object System.Drawing.Point(250, 22)
-    $txtExit.Size = New-Object System.Drawing.Size(120, 20)
-    $txtExit.Text = "$($monitorData.delayExiting / 1000)"
-    $tabMonitor.Controls.Add($txtExit)
-
     $lblCheck = New-Object System.Windows.Forms.Label
     $lblCheck.Text = "Monitor Update Frequency (sec):"
-    $lblCheck.Location = New-Object System.Drawing.Point(20, 60)
+    $lblCheck.Location = New-Object System.Drawing.Point(20, 25)
     $lblCheck.AutoSize = $true
     $tabMonitor.Controls.Add($lblCheck)
 
     $txtCheck = New-Object System.Windows.Forms.TextBox
-    $txtCheck.Location = New-Object System.Drawing.Point(250, 57)
+    $txtCheck.Location = New-Object System.Drawing.Point(250, 22)
     $txtCheck.Size = New-Object System.Drawing.Size(120, 20)
     $txtCheck.Text = "$($monitorData.delayProcessCheck / 1000)"
     $tabMonitor.Controls.Add($txtCheck)
 
-    $lblKill = New-Object System.Windows.Forms.Label
-    $lblKill.Text = "Stuck Process Kill Delay (sec):"
-    $lblKill.Location = New-Object System.Drawing.Point(20, 95)
-    $lblKill.AutoSize = $true
-    $tabMonitor.Controls.Add($lblKill)
-
-    $txtKill = New-Object System.Windows.Forms.TextBox
-    $txtKill.Location = New-Object System.Drawing.Point(250, 92)
-    $txtKill.Size = New-Object System.Drawing.Size(120, 20)
-    $txtKill.Text = "$($monitorData.delayKillStuck / 1000)"
-    $tabMonitor.Controls.Add($txtKill)
-
     $chkStartup = New-Object System.Windows.Forms.CheckBox
     $chkStartup.Text = "Start with Windows"
-    $chkStartup.Location = New-Object System.Drawing.Point(20, 135)
+    $chkStartup.Location = New-Object System.Drawing.Point(20, 65)
     $chkStartup.AutoSize = $true
     $chkStartup.Checked = (Test-Path $ShortcutPath)
     $tabMonitor.Controls.Add($chkStartup)
@@ -453,14 +425,14 @@ Function Show-ConfigWindow {
     # Archive Config
     $chkArchive = New-Object System.Windows.Forms.CheckBox
     $chkArchive.Text = "Auto-Archive Logs"
-    $chkArchive.Location = New-Object System.Drawing.Point(20, 165)
+    $chkArchive.Location = New-Object System.Drawing.Point(20, 95)
     $chkArchive.AutoSize = $true
     $chkArchive.Checked = $monitorData.autoArchive
     $tabMonitor.Controls.Add($chkArchive)
 
     $btnArchiveLogs = New-Object System.Windows.Forms.Button
     $btnArchiveLogs.Text = "Archive Now"
-    $btnArchiveLogs.Location = New-Object System.Drawing.Point(250, 162)
+    $btnArchiveLogs.Location = New-Object System.Drawing.Point(250, 92)
     $btnArchiveLogs.Size = New-Object System.Drawing.Size(140, 24)
     $btnArchiveLogs.Add_Click({ Invoke-LogMaintenance -ManualArchive })
     $tabMonitor.Controls.Add($btnArchiveLogs)
@@ -468,13 +440,13 @@ Function Show-ConfigWindow {
     # Purge Config
     $chkPurge = New-Object System.Windows.Forms.CheckBox
     $chkPurge.Text = "Purge Old Logs:"
-    $chkPurge.Location = New-Object System.Drawing.Point(20, 195)
+    $chkPurge.Location = New-Object System.Drawing.Point(20, 125)
     $chkPurge.AutoSize = $true
     $chkPurge.Checked = $monitorData.autoPurge
     $tabMonitor.Controls.Add($chkPurge)
 
     $cmbPurge = New-Object System.Windows.Forms.ComboBox
-    $cmbPurge.Location = New-Object System.Drawing.Point(155, 193)
+    $cmbPurge.Location = New-Object System.Drawing.Point(155, 123)
     $cmbPurge.Size = New-Object System.Drawing.Size(80, 20)
     $cmbPurge.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     @("Daily", "Weekly", "Monthly") | ForEach-Object { $cmbPurge.Items.Add($_) | Out-Null }
@@ -486,7 +458,7 @@ Function Show-ConfigWindow {
 
     $btnCleanLogs = New-Object System.Windows.Forms.Button
     $btnCleanLogs.Text = "Purge Now"
-    $btnCleanLogs.Location = New-Object System.Drawing.Point(250, 192)
+    $btnCleanLogs.Location = New-Object System.Drawing.Point(250, 122)
     $btnCleanLogs.Size = New-Object System.Drawing.Size(140, 24)
     $btnCleanLogs.Add_Click({ Invoke-LogMaintenance -ManualPurge })
     $tabMonitor.Controls.Add($btnCleanLogs)
@@ -494,13 +466,13 @@ Function Show-ConfigWindow {
     # Auto-Update Config
     $chkAutoUpdate = New-Object System.Windows.Forms.CheckBox
     $chkAutoUpdate.Text = "Check for Updates:"
-    $chkAutoUpdate.Location = New-Object System.Drawing.Point(20, 225)
+    $chkAutoUpdate.Location = New-Object System.Drawing.Point(20, 155)
     $chkAutoUpdate.AutoSize = $true
     $chkAutoUpdate.Checked = $monitorData.autoUpdate
     $tabMonitor.Controls.Add($chkAutoUpdate)
 
     $cmbUpdate = New-Object System.Windows.Forms.ComboBox
-    $cmbUpdate.Location = New-Object System.Drawing.Point(155, 223)
+    $cmbUpdate.Location = New-Object System.Drawing.Point(155, 153)
     $cmbUpdate.Size = New-Object System.Drawing.Size(80, 20)
     $cmbUpdate.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     @("Daily", "Weekly", "Monthly") | ForEach-Object { $cmbUpdate.Items.Add($_) | Out-Null }
@@ -512,7 +484,7 @@ Function Show-ConfigWindow {
 
     $btnCheckUpdates = New-Object System.Windows.Forms.Button
     $btnCheckUpdates.Text = "Check Now"
-    $btnCheckUpdates.Location = New-Object System.Drawing.Point(250, 222)
+    $btnCheckUpdates.Location = New-Object System.Drawing.Point(250, 152)
     $btnCheckUpdates.Size = New-Object System.Drawing.Size(140, 24)
     $btnCheckUpdates.Add_Click({ Test-ForUpdates -ManualCheck $true })
     $tabMonitor.Controls.Add($btnCheckUpdates)
@@ -572,9 +544,7 @@ Function Show-ConfigWindow {
             if ([int]$txtInst.Text -lt 1) { throw "Invalid Instances" }
             if ([int]$txtPort.Text -lt 1 -or [int]$txtPort.Text -gt 65535) { throw "Invalid Port" }
             
-            $null = [double]$txtExit.Text
             $null = [double]$txtCheck.Text
-            $null = [double]$txtKill.Text
 
             $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
             $form.Close()
@@ -595,9 +565,7 @@ Function Show-ConfigWindow {
         $rbStd.Checked = $true
         $txtArgs.Text = "-server -headless -noovr -fixedtimestep -nosymbollookup"
         
-        $txtExit.Text = "2"
         $txtCheck.Text = "5"
-        $txtKill.Text = "20"
         
         $chkStartup.Checked = $true
         $chkArchive.Checked = $true
@@ -625,9 +593,7 @@ Function Show-ConfigWindow {
         
         $monitorData.amountOfInstances = $numInst
         $monitorData.basePort = [int]$txtPort.Text
-        $monitorData.delayExiting = [int]([double]$txtExit.Text * 1000)
         $monitorData.delayProcessCheck = [int]([double]$txtCheck.Text * 1000)
-        $monitorData.delayKillStuck = [int]([double]$txtKill.Text * 1000)
         $monitorData.numTaskThreads = [int]$txtThreads.Text
         $monitorData.timeStep = $tStep
         $monitorData.additionalArgs = $txtArgs.Text
@@ -810,24 +776,14 @@ $MonitorAction = {
     $runningCount = $processes.Count
     $runningIds = $processes.Id
 
-    # --- PENDING PROCESS KILLS ---
-    $killKeys = @($Global:PendingKills.Keys)
-    foreach ($k in $killKeys) {
-        if ($now -ge $Global:PendingKills[$k]) {
-            Stop-Process -Id $k -Force -ErrorAction SilentlyContinue
-            $Global:PendingKills.Remove($k)
-        }
-    }
-
     $trackedPids = @($Global:PortMap.Keys)
     foreach ($pidKey in $trackedPids) {
         if ($runningIds -notcontains $pidKey) {
             $Global:PortMap.Remove($pidKey)
-            $Global:PendingKills.Remove($pidKey)
         }
     }
 
-    # --- UNIFIED LOG READING & WATCHDOG ---
+    # --- UNIFIED LOG READING ---
     if ($processes) {
         foreach ($proc in $processes) {
             $pData = $Global:PortMap[$proc.Id]
@@ -843,17 +799,6 @@ $MonitorAction = {
             if ($pData.LogPath) {
                 $lines = Get-Content -LiteralPath $pData.LogPath -Tail 15 -ErrorAction SilentlyContinue
                 if ($lines) {
-                    $lastLine = $lines[-1]
-
-                    # Watchdog: Check if log is frozen
-                    if ($pData.LastLogLine -ne $lastLine) {
-                        $pData.LastLogLine = $lastLine
-                        $pData.LastLogTime = $now
-                    } elseif (($now - $pData.LastLogTime).TotalMilliseconds -gt $config.delayKillStuck) {
-                        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-                        continue # Skip remaining checks, process is dead
-                    }
-
                     $content = $lines -join "`n"
 
                     # Port Verification
@@ -949,8 +894,6 @@ $MonitorAction = {
                         GS_Confirmed = $null
                         API_Confirmed = $null
                         LogPath = $null
-                        LastLogLine = ""
-                        LastLogTime = Get-Date
                     }
                 }
 
@@ -1152,6 +1095,4 @@ if ($initConf.autoUpdate -and ((Get-Date) - [datetime]$initConf.lastUpdateCheckD
 }
 
 $MonitorTimer.Start()
-
 [System.Windows.Forms.Application]::Run()
-
