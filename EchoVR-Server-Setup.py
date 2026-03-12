@@ -446,15 +446,12 @@ if %errorLevel% neq 0 (
     exit /b
 )
 
-:: 1. Force update for 64-bit Windows PowerShell (5.1)
+:: Force update for 64-bit Windows PowerShell (5.1)
 if exist "%SystemRoot%\\sysnative\\WindowsPowerShell\\v1.0\\powershell.exe" (
     "%SystemRoot%\\sysnative\\WindowsPowerShell\\v1.0\\powershell.exe" -WindowStyle Hidden -NoProfile -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"
 ) else (
     powershell -WindowStyle Hidden -NoProfile -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"
 )
-
-:: 2. Update PowerShell 7 (pwsh) since the monitor actually uses it
-pwsh -WindowStyle Hidden -NoProfile -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"
 
 del "%~f0"
 """
@@ -480,15 +477,6 @@ del "%~f0"
             
         except Exception as e:
             messagebox.showerror("Error", f"Could not run policy update script: {e}")
-
-    def check_and_install_pwsh(self):
-        if shutil.which("pwsh") is None:
-            msg = messagebox.askyesno("PowerShell 7 Required", "PowerShell 7 (pwsh) was not found on your system. It is required to run the monitor script.\n\nWould you like to attempt to install it automatically using Winget?")
-            if msg:
-                try:
-                    subprocess.Popen(["winget", "install", "--id", "Microsoft.Powershell", "--source", "winget", "--silent", "--accept-package-agreements", "--accept-source-agreements"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-                except Exception as e:
-                    messagebox.showerror("Install Failed", f"Could not install PowerShell 7 automatically: {e}\n\nPlease install it manually from Microsoft's website.")
 
     def download_monitor_file(self, filename):
             try:
@@ -518,7 +506,6 @@ del "%~f0"
                     self.save_setup()
                     
                     if filename == MONITOR_SCRIPT:
-                        self.check_and_install_pwsh()
                         # Always run the policy update
                         self.action_update_exec_policy()
                     else:
@@ -548,7 +535,7 @@ del "%~f0"
                 bat_filename = "Launch-Monitor.bat"
                 bat_path = os.path.join(ROOT_DIR, bat_filename)
                 
-                cmd_content = f"start /min pwsh -windowstyle hidden -file {MONITOR_SCRIPT}"
+                cmd_content = f"start /min powershell -windowstyle hidden -file {MONITOR_SCRIPT}"
                 with open(bat_path, "w") as f:
                     f.write(cmd_content)
                 
