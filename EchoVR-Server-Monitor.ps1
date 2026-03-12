@@ -303,6 +303,10 @@ Set-ApiAccess $initConfig.enableApi
 
 Function Invoke-LogMaintenance {
     param([switch]$ManualArchive, [switch]$ManualPurge)
+    
+    # Clean up any completed jobs to prevent memory leaks
+    Get-Job -State Completed | Remove-Job -ErrorAction SilentlyContinue
+
     $runningJobs = Get-Job -Name "LogMaintenance_Manual", "LogMaintenance_Auto" -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Running' }
     if ($runningJobs) { return }
 
@@ -721,6 +725,10 @@ Function Show-ConfigWindow {
             [System.Windows.Forms.MessageBox]::Show("Configuration Saved.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
     }
+
+    # Free memory used by the config window when it closes
+    $form.Dispose()
+
 }
 
 # ==============================================================================
@@ -889,6 +897,7 @@ $MonitorAction = {
     $trackedPids = @($Global:PortMap.Keys)
     foreach ($pidKey in $trackedPids) {
         if ($runningIds -notcontains $pidKey) { $Global:PortMap.Remove($pidKey) }
+        $Global:NotifiedPids.Remove($pidKey)
     }
 
     $canSoftShutdown = ($config.enableApi -and $config.allowMonitorApi)
@@ -926,7 +935,7 @@ $MonitorAction = {
                                 $conf = Get-MonitorConfig; $conf.pauseSpawning = $true; Save-MonitorConfig $conf
                                 $msgBody = "Your link code is: $code`n`nClick OK to open command central.`nClick Link EchoVRCE and enter your code.`n`nUnpause server spawning in the system tray after linking."
                                 $msgTitle = "Link Code Detected"
-                                $discordUrl = "discord://https://discord.com/channels/779349159852769310/1227795372244729926/1355176306484056084"
+                                $discordUrl = "discord://-/channels/779349159852769310/1227795372244729926/1355176306484056084"
                                 $cmd = "Add-Type -AssemblyName System.Windows.Forms; `$res = [System.Windows.Forms.MessageBox]::Show('$msgBody', '$msgTitle', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); if (`$res -eq [System.Windows.Forms.DialogResult]::OK) { Start-Process '$discordUrl' }"
                                 $bytes = [System.Text.Encoding]::Unicode.GetBytes($cmd)
                                 $encodedCommand = [Convert]::ToBase64String($bytes)
@@ -943,18 +952,15 @@ $MonitorAction = {
                 
                 if ($jobRes.success) {
                     $modeStrTitle = "Unknown Mode"; $modeStrTray = "Unknown"
-                    $maxPid = -1; $specs = 0
-                    
+                    $totalConnected = 0; $specs = 0
+
                     if ($jobRes.is404) {
                         $modeStrTitle = "Idle"; $modeStrTray = "Idle"
                     } elseif ($jobRes.is500) {
                         $modeStrTitle = "Social Lobby"; $modeStrTray = "Social Lobby"
                         if ($jobRes.bonesStr) {
                             $playerMatches = [regex]::Matches($jobRes.bonesStr, '(?i)"playerid"\s*:\s*(\d+)')
-                            foreach ($m in $playerMatches) {
-                                $val = [int]$m.Groups[1].Value
-                                if ($val -gt $maxPid) { $maxPid = $val }
-                            }
+                            $totalConnected = $playerMatches.Count
                         }
                     } else {
                         try {
@@ -979,37 +985,29 @@ $MonitorAction = {
                             if ($mapName) { $modeStrTray += " ($mapName)"; $modeStrTitle += "$mapName" }
                             
                             if ($sessionObj.teams) {
+                                # 1. Count actual regex matches to avoid disconnect gaps
                                 $playerMatches = [regex]::Matches($jobRes.sessionStr, '(?i)"playerid"\s*:\s*(\d+)')
-                                foreach ($m in $playerMatches) {
-                                    $val = [int]$m.Groups[1].Value
-                                    if ($val -gt $maxPid) { $maxPid = $val }
-                                }
-                                foreach ($team in $sessionObj.teams) {
-                                    if ($team.team -eq "SPECTATORS" -and $null -ne $team.players) {
-                                        $specs = @($team.players).Count
-                                    }
+                                $totalConnected = $playerMatches.Count
+                                
+                                # 2. Directly target Team 2 (index 2) for Spectators
+                                if ($sessionObj.teams.Count -ge 3 -and $null -ne $sessionObj.teams[2].players) {
+                                    $specs = @($sessionObj.teams[2].players).Count
                                 }
                             }
                         } catch {}
                     }
-                    
-                    if ($jobRes.is404) {
+
+                    $activePlayers = $totalConnected - $specs
+
+                    if ($totalConnected -eq 0) {
                         $pStrTitle = "0 Players Connected"; $pStrTray = "0 Players"
-                        $totalConnected = 0
                     } else {
-                        $totalConnected = $maxPid + 1
-                        $activePlayers = $totalConnected - $specs
-                        
-                        if ($totalConnected -eq 0) {
-                            $pStrTitle = "0 Players Connected"; $pStrTray = "0 Players"
+                        if ($specs -gt 0) {
+                            $pStrTitle = "$activePlayers Players Connected ($specs Spectating)"
+                            $pStrTray = "$activePlayers Players ($specs Spec.)"
                         } else {
-                            if ($specs -gt 0) {
-                                $pStrTitle = "$activePlayers Players Connected ($specs Spectating)"
-                                $pStrTray = "$activePlayers Players ($specs Spec.)"
-                            } else {
-                                $pStrTitle = "$activePlayers Players Connected"
-                                $pStrTray = "$activePlayers Players"
-                            }
+                            $pStrTitle = "$activePlayers Players Connected"
+                            $pStrTray = "$activePlayers Players"
                         }
                     }
                     
@@ -1271,13 +1269,21 @@ del "%~f0"
 # 11. EXECUTION
 # ==============================================================================
 
-$initConf = Get-MonitorConfig
-$daysToWaitInit = switch ($initConf.updateInterval) { "Daily" {1} "Weekly" {7} "Monthly" {30} default {7} }
-if ($initConf.autoUpdate -and ((Get-Date) - [datetime]$initConf.lastUpdateCheckDate).TotalDays -ge $daysToWaitInit) {
-    Test-ForUpdates -ManualCheck $false
-    $initConf.lastUpdateCheckDate = (Get-Date).ToString("o")
-    Save-MonitorConfig $initConf
-}
+try {
+    $initConf = Get-MonitorConfig
+    $daysToWaitInit = switch ($initConf.updateInterval) { "Daily" {1} "Weekly" {7} "Monthly" {30} default {7} }
+    if ($initConf.autoUpdate -and ((Get-Date) - [datetime]$initConf.lastUpdateCheckDate).TotalDays -ge $daysToWaitInit) {
+        Test-ForUpdates -ManualCheck $false
+        $initConf.lastUpdateCheckDate = (Get-Date).ToString("o")
+        Save-MonitorConfig $initConf
+    }
 
-$MonitorTimer.Start()
-[System.Windows.Forms.Application]::Run()
+    $MonitorTimer.Start()
+    [System.Windows.Forms.Application]::Run()
+} finally {
+    # Ensure Mutex is always released, even on crash
+    if ($null -ne $mutex) {
+        $mutex.ReleaseMutex()
+        $mutex.Dispose()
+    }
+}
