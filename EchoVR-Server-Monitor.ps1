@@ -5,14 +5,14 @@
 ###################################################################
 
 # Changes 
+# v4.0.3 - Added some bling to the about tab, download fonts from repo main/misc and place them in \content\engine\core\fonts\ to use them. <3
 # v4.0.2 - Added function to repair netconfig json files, should fix broadcaster init failures
 # v4.0.1 - Hotfix for incorrect launch args, removed trigger-happy stuck process kill code.
-# v4.0.0 - Revamped config, unified log/update scheduling.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "4.0.2"
+$Global:Version = "4.0.3"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
@@ -544,24 +544,50 @@ Function Show-ConfigWindow {
     $tabAbout.Text = "About"
     $tabControl.TabPages.Add($tabAbout)
 
+    # --- Font Loading Logic ---
+    $pfcStencil = New-Object System.Drawing.Text.PrivateFontCollection
+    $pfcNeuro = New-Object System.Drawing.Text.PrivateFontCollection
+    $fontEchoStencilPath = Join-Path $ScriptRoot "content\engine\core\fonts\EchoStencil.ttf"
+    $fontNeuropolPath = Join-Path $ScriptRoot "content\engine\core\fonts\Neuropol-X-Rg.otf"
+
+    if (Test-Path -LiteralPath $fontEchoStencilPath) { $pfcStencil.AddFontFile($fontEchoStencilPath) }
+    if (Test-Path -LiteralPath $fontNeuropolPath) { $pfcNeuro.AddFontFile($fontNeuropolPath) }
+    # --------------------------
+
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "EchoVR Server Monitor"
+    if ($pfcStencil.Families.Count -gt 0) {
+        $lblTitle.Font = New-Object System.Drawing.Font($pfcStencil.Families[0], 12, [System.Drawing.FontStyle]::Regular)
+    } else {
+        $lblTitle.Font = New-Object System.Drawing.Font("Arial", 14, [System.Drawing.FontStyle]::Bold)
+    }
+    $lblTitle.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $lblTitle.Location = New-Object System.Drawing.Point(10, 40)
+    $lblTitle.Size = New-Object System.Drawing.Size(400, 30)
+    $tabAbout.Controls.Add($lblTitle)
+
     $lblVersion = New-Object System.Windows.Forms.Label
-    $lblVersion.Text = "EchoVR Server Monitor v$($Global:Version)"
-    $lblVersion.Font = New-Object System.Drawing.Font("Microsoft Sans Serif", 12, [System.Drawing.FontStyle]::Bold)
+    $lblVersion.Text = "v$($Global:Version)"
+    if ($pfcNeuro.Families.Count -gt 0) {
+        $lblVersion.Font = New-Object System.Drawing.Font($pfcNeuro.Families[0], 12, [System.Drawing.FontStyle]::Bold)
+    } else {
+        $lblVersion.Font = New-Object System.Drawing.Font("Arial", 12, [System.Drawing.FontStyle]::Bold)
+    }
     $lblVersion.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $lblVersion.Location = New-Object System.Drawing.Point(10, 40)
+    $lblVersion.Location = New-Object System.Drawing.Point(10, 65)
     $lblVersion.Size = New-Object System.Drawing.Size(400, 30)
     $tabAbout.Controls.Add($lblVersion)
 
     $lblPing = New-Object System.Windows.Forms.Label
     $lblPing.Text = "Ping @berg_ on Discord for issues/feedback!"
     $lblPing.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $lblPing.Location = New-Object System.Drawing.Point(10, 80)
+    $lblPing.Location = New-Object System.Drawing.Point(10, 110)
     $lblPing.Size = New-Object System.Drawing.Size(400, 20)
     $tabAbout.Controls.Add($lblPing)
 
     $btnAboutUpdate = New-Object System.Windows.Forms.Button
     $btnAboutUpdate.Text = "Check for Updates"
-    $btnAboutUpdate.Location = New-Object System.Drawing.Point(135, 120)
+    $btnAboutUpdate.Location = New-Object System.Drawing.Point(135, 150)
     $btnAboutUpdate.Size = New-Object System.Drawing.Size(150, 30)
     $btnAboutUpdate.Add_Click({ Test-ForUpdates -ManualCheck $true })
     $tabAbout.Controls.Add($btnAboutUpdate)
