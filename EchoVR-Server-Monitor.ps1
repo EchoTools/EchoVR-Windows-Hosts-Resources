@@ -5,14 +5,14 @@
 ###################################################################
 
 # Changes 
+# v5.0.1 - Readded manual log archive/purge buttons that got missed during the UI update.
 # v5.0.0 - EchoVR API integration, customizable UI/Tray tags, Soft Shutdowns, and port-state persistence. Removed PS7 Requirement.
 # v4.0.3 - Added some bling to the about tab, download fonts from repo main/misc and place them in \content\engine\core\fonts\ to use them. <3
-# v4.0.2 - Added function to repair netconfig json files, should fix broadcaster init failures
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "5.0.0"
+$Global:Version = "5.0.1"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
@@ -486,6 +486,15 @@ Function Show-ConfigWindow {
     $chkArchive.Checked = $monitorData.autoArchive
     $tabMonitor.Controls.Add($chkArchive)
 
+    $btnArchiveNow = New-Object System.Windows.Forms.Button
+    $btnArchiveNow.Text = "Archive Now"
+    $btnArchiveNow.Location = New-Object System.Drawing.Point(250, 73)
+    $btnArchiveNow.Size = New-Object System.Drawing.Size(120, 23)
+    $btnArchiveNow.Add_Click({
+        Invoke-LogMaintenance -ManualArchive
+    })
+    $tabMonitor.Controls.Add($btnArchiveNow)
+
     $chkPurge = New-Object System.Windows.Forms.CheckBox
     $chkPurge.Text = "Purge Old Logs:"
     $chkPurge.Location = New-Object System.Drawing.Point(20, 105)
@@ -502,6 +511,15 @@ Function Show-ConfigWindow {
     $cmbPurge.Enabled = $chkPurge.Checked
     $tabMonitor.Controls.Add($cmbPurge)
     $chkPurge.Add_CheckedChanged({ $cmbPurge.Enabled = $chkPurge.Checked })
+
+    $btnPurgeNow = New-Object System.Windows.Forms.Button
+    $btnPurgeNow.Text = "Purge Now"
+    $btnPurgeNow.Location = New-Object System.Drawing.Point(250, 102)
+    $btnPurgeNow.Size = New-Object System.Drawing.Size(120, 23)
+    $btnPurgeNow.Add_Click({
+        Invoke-LogMaintenance -ManualPurge
+    })
+    $tabMonitor.Controls.Add($btnPurgeNow)
 
     $chkAutoUpdate = New-Object System.Windows.Forms.CheckBox
     $chkAutoUpdate.Text = "Check Updates:"
