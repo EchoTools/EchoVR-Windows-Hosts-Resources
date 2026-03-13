@@ -5,7 +5,7 @@
 ###################################################################
 
 # Changes 
-# v5.0.0 - EchoVR API telemetry, customizable UI/Tray tags, Soft Shutdowns, and port-state persistence. Removed PS7 Requirement.
+# v5.0.0 - EchoVR API integration, customizable UI/Tray tags, Soft Shutdowns, and port-state persistence. Removed PS7 Requirement.
 # v4.0.3 - Added some bling to the about tab, download fonts from repo main/misc and place them in \content\engine\core\fonts\ to use them. <3
 # v4.0.2 - Added function to repair netconfig json files, should fix broadcaster init failures
 
