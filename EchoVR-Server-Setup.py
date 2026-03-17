@@ -59,7 +59,19 @@ class EchoServerConfig(ctk.CTk):
         self.initialize_fonts()
         
         self.title("EchoVR Server Setup Tool")
-        self.geometry("490x840") 
+ 
+        screen_height = self.winfo_screenheight()
+        default_width = 490
+        default_height = 840
+
+        if screen_height < default_height:
+            calc_height = int(screen_height * 0.8)
+            self.geometry(f"{default_width + 20}x{calc_height}") 
+            self.use_scroll = True
+        else:
+            self.geometry(f"{default_width}x{default_height}")
+            self.use_scroll = False
+
         self.resizable(False, False)
         
         # State variables
@@ -263,7 +275,12 @@ class EchoServerConfig(ctk.CTk):
     def build_main_menu(self):
         self.clear_window()
         
-        main_frame = ctk.CTkFrame(self)
+        # Pick which ui mode to use based on screen height
+        if self.use_scroll:
+            main_frame = ctk.CTkScrollableFrame(self)
+        else:
+            main_frame = ctk.CTkFrame(self)
+
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # 1. Calculate readiness state first
@@ -684,7 +701,12 @@ del "%~f0"
                         if remaining_params: args_val = "&" + "&".join(remaining_params)
                 except: pass
 
-        form_frame = ctk.CTkFrame(self)
+        # Frame selection
+        if self.use_scroll:
+            form_frame = ctk.CTkScrollableFrame(self)
+        else:
+            form_frame = ctk.CTkFrame(self)
+
         form_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
         cgnat_status = self.setup_data.get("checkCGNAT", "Fail")
