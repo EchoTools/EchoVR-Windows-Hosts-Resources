@@ -5,14 +5,14 @@
 ###################################################################
 
 # Changes 
+# v5.1.1 - Minor UI changes for better wording. Makes DLL auto-updates queue shutdown, monitor actually auto-updates at midnight instead of every 24h. Adds last update check indicator in About tab.
 # v5.1.0 - Added Touch-Friendly UI option, left-click tray menu, and double-click tray for config.
 # v5.0.1 - Readded manual log archive/purge buttons that got missed during the UI update.
-# v5.0.0 - EchoVR API integration, customizable UI/Tray tags, Soft Shutdowns, and port-state persistence. Removed PS7 Requirement.
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
-$Global:Version = "5.1.0"
+$Global:Version = "5.1.1"
 $Global:GithubOwner = "EchoTools"
 $Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
@@ -24,6 +24,11 @@ $portalURL = "https://echovrce.com/"
 # DLL Hash Targets (MD5)
 $Global:Hash_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
 $Global:Hash_DBGCORE = "7E7998C29A1E588AF659E19C3DD27265"
+
+# Update Parameters
+$Global:PendingSilentDLLUpdate = $false
+$Global:PendingMonitorUpdateUrl = $null
+$Global:SilentUpdatePreviousPauseState = $false
 
 # Port Management & Instance Tracking
 # Structure: @{ PID = @{ GS=1234; API=1235; LogPath="..."; ShutdownQueued=$false; PlayerCount=0; ... } }
@@ -62,7 +67,7 @@ if ($ProcessName -eq "pwsh" -or $ProcessName -eq "powershell" -or $ProcessName -
 $mutexName = "EchoVRServerMonitor_Mutex_Global"
 $mutex = New-Object System.Threading.Mutex($false, $mutexName)
 if (-not $mutex.WaitOne(0, $false)) {
-    [System.Windows.Forms.MessageBox]::Show("The Server Monitor is already running.", "Monitor Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    [System.Windows.Forms.MessageBox]::Show("The Server Monitor is already running. Check the system tray.", "Monitor Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     Exit
 }
 
@@ -267,6 +272,27 @@ Function Save-MonitorConfig ($configObj) {
     $configObj | ConvertTo-Json -Depth 4 | Set-Content $MonitorFile
 }
 
+Function Test-ShouldRunAutoUpdate ($configObj, $now = (Get-Date)) {
+    if (-not $configObj.autoUpdate) { return $false }
+
+    $daysToWait = switch ($configObj.updateInterval) {
+        "Daily" { 1 }
+        "Weekly" { 7 }
+        "Monthly" { 30 }
+        default { 7 }
+    }
+
+    try {
+        $lastCheck = [datetime]$configObj.lastUpdateCheckDate
+    } catch {
+        return $true
+    }
+
+    # Use local calendar dates so checks happen after local midnight boundaries,
+    # not after a rolling 24-hour window.
+    return ($now.Date -ge $lastCheck.Date.AddDays($daysToWait))
+}
+
 Function Update-ExternalConfigs ($numInstances) {
     if (Test-Path $SetupFile) {
         $dashData = Get-Content $SetupFile -Raw | ConvertFrom-Json
@@ -423,7 +449,7 @@ Function Show-ConfigWindow {
     $lblPort = New-Object System.Windows.Forms.Label; $lblPort.Text = "Base Port:"; $lblPort.Location = P 20 60; $lblPort.AutoSize = $true; $tabServer.Controls.Add($lblPort)
     $txtPort = New-Object System.Windows.Forms.TextBox; $txtPort.Location = P 250 57; $txtPort.Size = S 120 20; $txtPort.Text = "$($monitorData.basePort)"; $tabServer.Controls.Add($txtPort)
 
-    $lblThreads = New-Object System.Windows.Forms.Label; $lblThreads.Text = "Threads per Instance:"; $lblThreads.Location = P 20 95; $lblThreads.AutoSize = $true; $tabServer.Controls.Add($lblThreads)
+    $lblThreads = New-Object System.Windows.Forms.Label; $lblThreads.Text = "Max Threads per Instance:"; $lblThreads.Location = P 20 95; $lblThreads.AutoSize = $true; $tabServer.Controls.Add($lblThreads)
     $txtThreads = New-Object System.Windows.Forms.TextBox; $txtThreads.Location = P 250 92; $txtThreads.Size = S 120 20; $txtThreads.Text = "$($monitorData.numTaskThreads)"; $tabServer.Controls.Add($txtThreads)
 
     $lblTime = New-Object System.Windows.Forms.Label; $lblTime.Text = "Server Timestep:"; $lblTime.Location = P 20 130; $lblTime.AutoSize = $true; $tabServer.Controls.Add($lblTime)
@@ -468,7 +494,7 @@ Function Show-ConfigWindow {
     $cmbUpdate.SelectedItem = $monitorData.updateInterval; $cmbUpdate.Enabled = $chkAutoUpdate.Checked; $tabMonitor.Controls.Add($cmbUpdate)
     $chkAutoUpdate.Add_CheckedChanged({ $cmbUpdate.Enabled = $chkAutoUpdate.Checked })
 
-    $chkAllowMonitorApi = New-Object System.Windows.Forms.CheckBox; $chkAllowMonitorApi.Text = "Allow Monitor API Usage"; $chkAllowMonitorApi.Location = P 20 165; $chkAllowMonitorApi.AutoSize = $true; $chkAllowMonitorApi.Checked = $monitorData.allowMonitorApi; $tabMonitor.Controls.Add($chkAllowMonitorApi)
+    $chkAllowMonitorApi = New-Object System.Windows.Forms.CheckBox; $chkAllowMonitorApi.Text = "Allow Monitor to use EchoVR API"; $chkAllowMonitorApi.Location = P 20 165; $chkAllowMonitorApi.AutoSize = $true; $chkAllowMonitorApi.Checked = $monitorData.allowMonitorApi; $tabMonitor.Controls.Add($chkAllowMonitorApi)
 
     $telSize = if ($tf) { 10 } else { 8 }
     $lblTelemetry = New-Object System.Windows.Forms.Label; $lblTelemetry.Text = "Telemetry Visibility:"; $lblTelemetry.Font = New-Object System.Drawing.Font("Arial", $telSize, [System.Drawing.FontStyle]::Bold); $lblTelemetry.Location = P 20 195; $lblTelemetry.AutoSize = $true; $tabMonitor.Controls.Add($lblTelemetry)
@@ -551,8 +577,40 @@ Function Show-ConfigWindow {
     $btnAboutUpdate = New-Object System.Windows.Forms.Button
     $btnAboutUpdate.Text = "Check for Updates"
     $btnAboutUpdate.Location = P 135 150; $btnAboutUpdate.Size = S 150 30
-    $btnAboutUpdate.Add_Click({ Test-ForUpdates -ManualCheck $true })
+    $btnAboutUpdate.Add_Click({ 
+        Test-ForUpdates -ManualCheck $true 
+        
+        # 1. Save the new timestamp to the configuration file
+        $conf = Get-MonitorConfig
+        $newDate = Get-Date
+        $conf.lastUpdateCheckDate = $newDate.ToString("o")
+        Save-MonitorConfig $conf
+        
+        # 2. Dynamically update the label text on the active UI
+        $lblLastUpdate.Text = "Last Checked on $($newDate.ToString("MM-dd-yyyy 'at' HH:mm:ss"))"
+    })
     $tabAbout.Controls.Add($btnAboutUpdate)
+
+    $lblLastUpdate = New-Object System.Windows.Forms.Label
+    try {
+        $lastDate = [datetime]$monitorData.lastUpdateCheckDate
+        if ($lastDate.Year -eq 2000) { 
+            $dateStr = "Never" 
+        } else { 
+            $dateStr = $lastDate.ToString("MM-dd-yyyy 'at' HH:mm:ss") 
+        }
+    } catch {
+        $dateStr = "Unknown"
+    }
+    
+    $lblLastUpdate.Text = "Last Checked on $dateStr"
+    $lblLastUpdate.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    
+    $lblUpdateSize = if ($tf) { 10 } else { 9 }
+    $lblLastUpdate.Font = New-Object System.Drawing.Font("Segoe UI", $lblUpdateSize, [System.Drawing.FontStyle]::Regular)
+    $lblLastUpdate.Location = P 10 190
+    $lblLastUpdate.Size = S 400 20
+    $tabAbout.Controls.Add($lblLastUpdate)
 
     # --- BOTTOM BUTTONS ---
     $btnOpenLocal = New-Object System.Windows.Forms.Button; $btnOpenLocal.Text = "Open Server Config"; $btnOpenLocal.Location = P 30 485; $btnOpenLocal.Size = S 180 25; $btnOpenLocal.Add_Click({ Invoke-Item $LocalConfigPath }); $form.Controls.Add($btnOpenLocal)
@@ -793,6 +851,7 @@ Function Get-EchoApiData ($apiPort) {
 # ==============================================================================
 
 $MonitorTimer = New-Object System.Windows.Forms.Timer
+# random value to start with, switches to user-defined value on first tick
 $MonitorTimer.Interval = 3000
 
 $MonitorAction = {
@@ -804,14 +863,10 @@ $MonitorAction = {
     $currentDay = $now.DayOfYear
     if ($Global:LastLogMaintenanceDay -ne $currentDay) {
         Invoke-LogMaintenance
-        if ($config.autoUpdate) {
-            $daysToWait = switch ($config.updateInterval) { "Daily" {1} "Weekly" {7} "Monthly" {30} default {7} }
-            $lastCheck = [datetime]$config.lastUpdateCheckDate
-            if (($now - $lastCheck).TotalDays -ge $daysToWait) {
-                Test-ForUpdates -ManualCheck $false
-                $config.lastUpdateCheckDate = $now.ToString("o")
-                Save-MonitorConfig $config
-            }
+        if (Test-ShouldRunAutoUpdate -configObj $config -now $now) {
+            Test-ForUpdates -ManualCheck $false
+            $config.lastUpdateCheckDate = $now.ToString("o")
+            Save-MonitorConfig $config
         }
         $Global:LastLogMaintenanceDay = $currentDay
     }
@@ -1013,6 +1068,29 @@ $MonitorAction = {
         }
     }
 
+    if ($Global:PendingSilentDLLUpdate -and $runningCount -eq 0) {
+        try {
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri "$dllURL/pnsradgameserver.dll" -OutFile $Script:Path_PNSRAD
+            Invoke-WebRequest -Uri "$dllURL/dbgcore.dll" -OutFile $Script:Path_DBGCORE
+        } catch { }
+
+        $Global:PendingSilentDLLUpdate = $false
+
+        # 4. Unpause Spawning
+        $conf = Get-MonitorConfig
+        $conf.pauseSpawning = $Global:SilentUpdatePreviousPauseState
+        Save-MonitorConfig $conf
+        
+        # Sync the loop's current config object so it spawns immediately this tick
+        $config = Get-MonitorConfig 
+
+        # Fire any pending Monitor Updates (This automatically restarts the app)
+        if ($Global:PendingMonitorUpdateUrl) {
+            Invoke-MonitorUpdate -downloadUrl $Global:PendingMonitorUpdateUrl
+        }
+    }
+
     if (-not $config.pauseSpawning) {
         $needed = $config.amountOfInstances - $runningCount
         if ($needed -gt 0) {
@@ -1055,7 +1133,25 @@ Function Update-DLLs ($Silent = $false) {
 
     $running = Get-Process -Name $Script:EchoProcessName -ErrorAction SilentlyContinue
     if ($running) {
-        if ($Silent) { return $false } # Abort silent update if servers are running
+        if ($Silent) { 
+            # 1. Pause Spawning
+            $conf = Get-MonitorConfig
+            $Global:SilentUpdatePreviousPauseState = $conf.pauseSpawning
+            $conf.pauseSpawning = $true
+            Save-MonitorConfig $conf
+            
+            # 2. Queue Soft Shutdowns
+            foreach ($k in $Global:PortMap.Keys) {
+                if ($conf.enableApi -and $conf.allowMonitorApi) {
+                    $Global:PortMap[$k].ShutdownQueued = $true
+                } else {
+                    Stop-Process -Id $k -Force -ErrorAction SilentlyContinue
+                }
+            }
+
+            $Global:PendingSilentDLLUpdate = $true
+            return $false 
+        }
         
         $conf = Get-MonitorConfig
         $conf.pauseSpawning = $true
@@ -1119,6 +1215,8 @@ Function Test-ForUpdates ($ManualCheck = $false) {
                 $res = [System.Windows.Forms.MessageBox]::Show($msg, "Critical Updates Found", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Exclamation)
                 if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { if (Update-DLLs) { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl } }
             } else {
+                # Save the URL so the background loop can trigger it after the DLLs finish
+                $Global:PendingMonitorUpdateUrl = $monitorAssetUrl
                 if (Update-DLLs -Silent $true) { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl }
             }
             return
@@ -1198,8 +1296,7 @@ del "%~f0"
 
 try {
     $initConf = Get-MonitorConfig
-    $daysToWaitInit = switch ($initConf.updateInterval) { "Daily" {1} "Weekly" {7} "Monthly" {30} default {7} }
-    if ($initConf.autoUpdate -and ((Get-Date) - [datetime]$initConf.lastUpdateCheckDate).TotalDays -ge $daysToWaitInit) {
+    if (Test-ShouldRunAutoUpdate -configObj $initConf) {
         Test-ForUpdates -ManualCheck $false
         $initConf.lastUpdateCheckDate = (Get-Date).ToString("o")
         Save-MonitorConfig $initConf
