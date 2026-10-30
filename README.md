@@ -1,7 +1,7 @@
 # The PowerShell Server Monitor is being deprecated.
 Beginning Oct. 30th 2026, Windows hosts are asked to host instances via the new [Echo VR Launcher](https://github.com/marshmallow-mia/EchoVR_Launcher).<br>
 ## Download the launcher and follow these steps to get started:
-1. Download the game (or point it to your echo folder) from the `Install` tab on the sidebar. Select `Flat` for your installation type.
+1. Download the game (or point it to your echo folder) from the `Install` tab on the sidebar.<br>Select `Flat` for your installation type.
 2. In the `Settings` menu, ensure all launcher and update options are checked.<br>In `Advanced Settings`, enter the following dev code: ```xnzi2zclrlv2lgqy5zrkev2qxg```<br>
 <br><img width="475" height="520" alt="{07E79B24-92DB-4DA3-941C-9E2FDDDE8C27}" src="https://github.com/user-attachments/assets/6ea7bbf3-1604-47a2-807d-ed2e11fe238c" /><br>
 3. Under `Community`, click on `EchoVRCE` and sign in with your discord account.
@@ -11,7 +11,7 @@ Beginning Oct. 30th 2026, Windows hosts are asked to host instances via the new 
 <br><img width="527" height="250" alt="{7FEAB571-EE31-49B0-8A26-5C1DA9996144}" src="https://github.com/user-attachments/assets/4fc683d4-1f0f-41e7-9c88-9ef36f0ea430" /><br>
 6. Check the `Start Servers with this PC` box to automatically recover servers in the event of a restart.<br>
 <br><img width="509" height="161" alt="{C322FAC8-3C78-49B3-83DF-069BF023573F}" src="https://github.com/user-attachments/assets/b29fd6b6-a21b-493c-961b-d0bf26935617" /><br>
-7. Click the `Start All` button to launch your servers.<br>
+7. Click the `Start All` button to launch your servers.<br>**Allow any Windows Firewall popups that appear.**
 <br><img width="969" height="429" alt="{5D3B1365-6665-4840-9402-4BA797A1021D}" src="https://github.com/user-attachments/assets/49fb8be0-9cd0-44e8-b301-a606bd73659d" />
 <li>Region, guild, and tick rate settings can be changed for all servers with the `Settings` button at the top of the hosting menu.</li>
 <li>Per-instance settings including port number can be changed via the settings icon on each individual server.</li>
