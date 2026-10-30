@@ -13,9 +13,9 @@ Beginning Oct. 30th 2026, Windows hosts are asked to host instances via the new 
 <br><img width="509" height="161" alt="{C322FAC8-3C78-49B3-83DF-069BF023573F}" src="https://github.com/user-attachments/assets/b29fd6b6-a21b-493c-961b-d0bf26935617" /><br>
 7. Click the `Start All` button to launch your servers.<br>**Allow any Windows Firewall popups that appear.**
 <br><img width="969" height="429" alt="{5D3B1365-6665-4840-9402-4BA797A1021D}" src="https://github.com/user-attachments/assets/49fb8be0-9cd0-44e8-b301-a606bd73659d" />
-<li>Region, guild, and tick rate settings can be changed for all servers with the `Settings` button at the top of the hosting menu.</li>
+<li>Region, guild, and tick rate settings can be changed for all servers with the Settings button at the top of the hosting menu.</li>
 <li>Per-instance settings including port number can be changed via the settings icon on each individual server.</li>
-<li>If your servers are failing to launch or register, open the `Doctor` tab to view diagnostics and run fixes.</li>
+<li>If your servers are failing to launch or register, open the Doctor tab in the hosting menu to view diagnostics and run fixes.</li>
 
 ### The old server monitor will still work, but will not be maintained going forward (and does not support NEVR Runtime updates). 
 For information pertaining to the old monitor, see the [wiki](https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources/wiki).
