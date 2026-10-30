@@ -1,3 +1,6 @@
+# THIS CODEBASE IS DEPRECATED AS OF OCTOBER 30 2026!
+# Click the Migrate Now button in the About tab to migrate your server.
+
 ###################################################################
 # Code by marshmallow_mia and now largely berg_
 # Server monitor lives in the system tray :)
@@ -5,26 +8,18 @@
 ###################################################################
 
 # Changes
-# v5.5.0 - Added event logging option. Instance restart timer now queues shutdown only after continuous idle time. 
+# v5.5.0 - EOL Update - Added server migration flow.
+#          Added event logging option. Instance restart timer now queues shutdown only after continuous idle time. 
 #          Moved telemetry visibility config to a submenu. Monitor now also checks & updates power/sleep options on startup.
-# v5.4.0 - Addressed race condition between instance title update and shutdown evaluation. Adds option to auto-restart instances.
-# v5.3.0 - Added dynamic timestep option and disables quickedit for echo instances. Adds instance kill condition options (to reenable log parsing if needed). 
 
 # ==============================================================================
 # GLOBAL SETTINGS
 # ==============================================================================
 $Global:Version = "5.5.0"
-$Global:GithubOwner = "EchoTools"
-$Global:GithubRepo  = "EchoVR-Windows-Hosts-Resources"
 
-$releasesURL = "https://api.github.com/repos/$Global:GithubOwner/$Global:GithubRepo/releases/latest"
-$dllURL = "https://raw.githubusercontent.com/$Global:GithubOwner/$Global:GithubRepo/main/dll"
 $headsetLinkURL = "discord://-/channels/779349159852769310/1227795372244729926/1355176306484056084"
 $portalURL = "https://echovrce.com/"
-
-# DLL Hash Targets (MD5)
-$Global:Hash_PNSRAD = "67E6E9B3BE315EA784D69E5A31815B89"
-$Global:Hash_DBGCORE = "7E7998C29A1E588AF659E19C3DD27265"
+$migrationGuideURL = "https://github.com/EchoTools/EchoVR-Windows-Hosts-Resources"
 
 # Target Log Errors for Termination
 $Global:TargetLogErrors = @(
@@ -42,10 +37,9 @@ $Global:TargetLogErrors = @(
     "Console close signal received"
 )
 
-# Update Parameters
-$Global:PendingSilentDLLUpdate = $false
-$Global:PendingMonitorUpdateUrl = $null
-$Global:SilentUpdatePreviousPauseState = $false
+# Migration State
+$Global:MigrationInProgress = $false
+$Global:MigrationPopupOpen = $false
 
 # Port Management & Instance Tracking
 $Global:PortMap = @{}
@@ -107,12 +101,10 @@ $TempDir = Join-Path $DashboardDir "temp"
 $PortsFile = Join-Path $TempDir "ports.json"
 $SetupFile = Join-Path $DashboardDir "setup.json"
 $MonitorFile = Join-Path $DashboardDir "monitor.json"
+$MigrationFile = Join-Path $DashboardDir "migration.json"
 $LocalConfigPath = Join-Path $ScriptRoot "_local\config.json"
 $LogPath = Join-Path $ScriptRoot "_local\r14logs"
 $LogPathOld = Join-Path $LogPath "old"
-
-$Path_PNSRAD = Join-Path $ScriptRoot "bin\win10\pnsradgameserver.dll"
-$Path_DBGCORE = Join-Path $ScriptRoot "bin\win10\dbgcore.dll"
 
 $StartupFolder = [Environment]::GetFolderPath('Startup')
 $ShortcutPath = Join-Path $StartupFolder "EchoVR Server Monitor.lnk"
@@ -342,9 +334,6 @@ Function Get-MonitorConfig {
         killCondition = "ExitOnError"
         startupGracePeriod = 30
         suppressSetupWarning = $false
-        autoUpdate = $true
-        updateInterval = "Daily"
-        lastUpdateCheckDate = "2000-01-01T00:00:00"
         pauseSpawning = $false
         autoArchive = $true
         autoPurge = $false
@@ -384,6 +373,14 @@ Function Get-MonitorConfig {
         $saveNeeded = $true
     }
 
+    # Updater settings no longer exist; drop them from older monitor.json files
+    foreach ($legacyKey in @("autoUpdate", "updateInterval", "lastUpdateCheckDate")) {
+        if ($null -ne $config.psobject.Properties[$legacyKey]) {
+            $config.psobject.Properties.Remove($legacyKey)
+            $saveNeeded = $true
+        }
+    }
+
     foreach ($key in $defaultConfig.Keys) {
         if ($null -eq $config.$key) { 
             $config | Add-Member -MemberType NoteProperty -Name $key -Value $defaultConfig[$key] -Force
@@ -397,15 +394,6 @@ Function Get-MonitorConfig {
 
 Function Save-MonitorConfig ($configObj) {
     $configObj | ConvertTo-Json -Depth 4 | Set-Content $MonitorFile
-}
-
-Function Test-ShouldRunAutoUpdate ($configObj, $now = (Get-Date)) {
-    if (-not $configObj.autoUpdate) { return $false }
-    $daysToWait = switch ($configObj.updateInterval) {
-        "Daily" { 1 } "Weekly" { 7 } "Monthly" { 30 } default { 7 }
-    }
-    try { $lastCheck = [datetime]$configObj.lastUpdateCheckDate } catch { return $true }
-    return ($now.Date -ge $lastCheck.Date.AddDays($daysToWait))
 }
 
 Function Update-ExternalConfigs ($numInstances) {
@@ -764,36 +752,29 @@ Function Show-ConfigWindow {
     $btnPurgeNow = New-Object System.Windows.Forms.Button; $btnPurgeNow.Text = "Purge Now"; $btnPurgeNow.Location = P 250 102; $btnPurgeNow.Size = S 120 23; $tabMonitor.Controls.Add($btnPurgeNow)
     $btnPurgeNow.Add_Click({ Invoke-LogMaintenance -ManualPurge })
 
-    $chkAutoUpdate = New-Object System.Windows.Forms.CheckBox; $chkAutoUpdate.Text = "Check Updates:"; $chkAutoUpdate.Location = P 20 135; $chkAutoUpdate.AutoSize = $true; $chkAutoUpdate.Checked = $monitorData.autoUpdate; $tabMonitor.Controls.Add($chkAutoUpdate)
+    $chkAllowMonitorApi = New-Object System.Windows.Forms.CheckBox; $chkAllowMonitorApi.Text = "Allow Monitor to use EchoVR API"; $chkAllowMonitorApi.Location = P 20 135; $chkAllowMonitorApi.AutoSize = $true; $chkAllowMonitorApi.Checked = $monitorData.allowMonitorApi; $tabMonitor.Controls.Add($chkAllowMonitorApi)
 
-    $cmbUpdate = New-Object System.Windows.Forms.ComboBox; $cmbUpdate.Location = P 135 133; $cmbUpdate.Size = S 80 20; $cmbUpdate.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    @("Daily", "Weekly", "Monthly") | ForEach-Object { $cmbUpdate.Items.Add($_) | Out-Null }
-    $cmbUpdate.SelectedItem = $monitorData.updateInterval; $cmbUpdate.Enabled = $chkAutoUpdate.Checked; $tabMonitor.Controls.Add($cmbUpdate)
-    $chkAutoUpdate.Add_CheckedChanged({ $cmbUpdate.Enabled = $chkAutoUpdate.Checked })
-
-    $chkAllowMonitorApi = New-Object System.Windows.Forms.CheckBox; $chkAllowMonitorApi.Text = "Allow Monitor to use EchoVR API"; $chkAllowMonitorApi.Location = P 20 165; $chkAllowMonitorApi.AutoSize = $true; $chkAllowMonitorApi.Checked = $monitorData.allowMonitorApi; $tabMonitor.Controls.Add($chkAllowMonitorApi)
-
-    $chkAutoRestart = New-Object System.Windows.Forms.CheckBox; $chkAutoRestart.Text = "Idle Time until Auto-Restart (min):"; $chkAutoRestart.Location = P 20 195; $chkAutoRestart.AutoSize = $true; $chkAutoRestart.Checked = $monitorData.autoRestartIdle; $tabMonitor.Controls.Add($chkAutoRestart)
-    $txtAutoRestart = New-Object System.Windows.Forms.TextBox; $txtAutoRestart.Location = P 250 192; $txtAutoRestart.Size = S 120 20; $txtAutoRestart.Text = "$($monitorData.autoRestartTimeout)"; $txtAutoRestart.Enabled = $monitorData.autoRestartIdle; $tabMonitor.Controls.Add($txtAutoRestart)
+    $chkAutoRestart = New-Object System.Windows.Forms.CheckBox; $chkAutoRestart.Text = "Idle Time until Auto-Restart (min):"; $chkAutoRestart.Location = P 20 165; $chkAutoRestart.AutoSize = $true; $chkAutoRestart.Checked = $monitorData.autoRestartIdle; $tabMonitor.Controls.Add($chkAutoRestart)
+    $txtAutoRestart = New-Object System.Windows.Forms.TextBox; $txtAutoRestart.Location = P 250 162; $txtAutoRestart.Size = S 120 20; $txtAutoRestart.Text = "$($monitorData.autoRestartTimeout)"; $txtAutoRestart.Enabled = $monitorData.autoRestartIdle; $tabMonitor.Controls.Add($txtAutoRestart)
     $chkAutoRestart.Add_CheckedChanged({ $txtAutoRestart.Enabled = $chkAutoRestart.Checked })
 
-    $chkLogging = New-Object System.Windows.Forms.CheckBox; $chkLogging.Text = "Monitor Event Logging"; $chkLogging.Location = P 20 225; $chkLogging.AutoSize = $true; $chkLogging.Checked = $monitorData.enableMonitorLogging; $tabMonitor.Controls.Add($chkLogging)
+    $chkLogging = New-Object System.Windows.Forms.CheckBox; $chkLogging.Text = "Monitor Event Logging"; $chkLogging.Location = P 20 195; $chkLogging.AutoSize = $true; $chkLogging.Checked = $monitorData.enableMonitorLogging; $tabMonitor.Controls.Add($chkLogging)
 
     $telSize = if ($tf) { 10 } else { 8 }
-    $lblTelemetry = New-Object System.Windows.Forms.Label; $lblTelemetry.Text = "Telemetry Visibility:"; $lblTelemetry.Font = New-Object System.Drawing.Font("Arial", $telSize, [System.Drawing.FontStyle]::Bold); $lblTelemetry.Location = P 20 255; $lblTelemetry.AutoSize = $true; $tabMonitor.Controls.Add($lblTelemetry)
+    $lblTelemetry = New-Object System.Windows.Forms.Label; $lblTelemetry.Text = "Telemetry Visibility:"; $lblTelemetry.Font = New-Object System.Drawing.Font("Arial", $telSize, [System.Drawing.FontStyle]::Bold); $lblTelemetry.Location = P 20 225; $lblTelemetry.AutoSize = $true; $tabMonitor.Controls.Add($lblTelemetry)
 
     $Global:TempTelemetry = @{
         titlePid = $monitorData.titlePid; titlePorts = $monitorData.titlePorts; titleLobby = $monitorData.titleLobby; titlePlayers = $monitorData.titlePlayers; titleUptime = $monitorData.titleUptime
         trayPid = $monitorData.trayPid; trayPorts = $monitorData.trayPorts; trayLobby = $monitorData.trayLobby; trayPlayers = $monitorData.trayPlayers; trayUptime = $monitorData.trayUptime
     }
     
-    $btnConfigTelemetry = New-Object System.Windows.Forms.Button; $btnConfigTelemetry.Text = "Configure"; $btnConfigTelemetry.Location = P 170 253; $btnConfigTelemetry.Size = S 80 23; $tabMonitor.Controls.Add($btnConfigTelemetry)
+    $btnConfigTelemetry = New-Object System.Windows.Forms.Button; $btnConfigTelemetry.Text = "Configure"; $btnConfigTelemetry.Location = P 170 223; $btnConfigTelemetry.Size = S 80 23; $tabMonitor.Controls.Add($btnConfigTelemetry)
     $btnConfigTelemetry.Add_Click({
         $res = Show-TelemetryConfigWindow -currentData $Global:TempTelemetry -allowApi $chkAllowMonitorApi.Checked
         if ($res) { $Global:TempTelemetry = $res }
     })
 
-    $chkTouch = New-Object System.Windows.Forms.CheckBox; $chkTouch.Text = "Enable Touch-Friendly Interface"; $chkTouch.Location = P 20 285; $chkTouch.AutoSize = $true; $chkTouch.Checked = $monitorData.touchFriendly; $tabMonitor.Controls.Add($chkTouch)
+    $chkTouch = New-Object System.Windows.Forms.CheckBox; $chkTouch.Text = "Enable Touch-Friendly Interface"; $chkTouch.Location = P 20 255; $chkTouch.AutoSize = $true; $chkTouch.Checked = $monitorData.touchFriendly; $tabMonitor.Controls.Add($chkTouch)
 
     # --- TAB 3: ABOUT ---
     $tabAbout = New-Object System.Windows.Forms.TabPage; $tabAbout.Text = "About"; $tabControl.TabPages.Add($tabAbout)
@@ -828,29 +809,21 @@ Function Show-ConfigWindow {
     $tabAbout.Controls.Add($lblVersion)
 
     $lblPing = New-Object System.Windows.Forms.Label
-    $lblPing.Text = "Ping @berg_ on Discord for issues/feedback!"
+    $lblPing.Text = "The PowerShell Monitor has reached EOL. Thank you for your feedback!"
     $lblPing.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter; $lblPing.Location = P 10 110; $lblPing.Size = S 400 20
     $tabAbout.Controls.Add($lblPing)
 
-    $btnAboutUpdate = New-Object System.Windows.Forms.Button
-    $btnAboutUpdate.Text = "Check for Updates"; $btnAboutUpdate.Location = P 135 150; $btnAboutUpdate.Size = S 150 30
-    $btnAboutUpdate.Add_Click({ 
-        Test-ForUpdates -ManualCheck $true 
-        $conf = Get-MonitorConfig; $newDate = Get-Date; $conf.lastUpdateCheckDate = $newDate.ToString("o"); Save-MonitorConfig $conf
-        $lblLastUpdate.Text = "Last Checked on $($newDate.ToString("MM-dd-yyyy 'at' HH:mm:ss"))"
+    $btnMigrate = New-Object System.Windows.Forms.Button
+    $btnMigrate.Text = "Migrate Server"; $btnMigrate.Location = P 135 150; $btnMigrate.Size = S 150 30
+    $btnMigrate.Add_Click({
+        $choice = Invoke-MigrationPrompt -Owner $form
+        if ($choice -eq "Migrate") {
+            # Migration has started and the monitor will exit on its own; close this window without saving
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            $form.Close()
+        }
     })
-    $tabAbout.Controls.Add($btnAboutUpdate)
-
-    $lblLastUpdate = New-Object System.Windows.Forms.Label
-    try {
-        $lastDate = [datetime]$monitorData.lastUpdateCheckDate
-        if ($lastDate.Year -eq 2000) { $dateStr = "Never" } else { $dateStr = $lastDate.ToString("MM-dd-yyyy 'at' HH:mm:ss") }
-    } catch { $dateStr = "Unknown" }
-    
-    $lblLastUpdate.Text = "Last Checked on $dateStr"; $lblLastUpdate.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-    $lblUpdateSize = if ($tf) { 10 } else { 9 }
-    $lblLastUpdate.Font = New-Object System.Drawing.Font("Segoe UI", $lblUpdateSize, [System.Drawing.FontStyle]::Regular); $lblLastUpdate.Location = P 10 190; $lblLastUpdate.Size = S 400 20
-    $tabAbout.Controls.Add($lblLastUpdate)
+    $tabAbout.Controls.Add($btnMigrate)
 
     # --- BOTTOM BUTTONS ---
     $btnOpenLocal = New-Object System.Windows.Forms.Button; $btnOpenLocal.Text = "Open Server Config"; $btnOpenLocal.Location = P 30 485; $btnOpenLocal.Size = S 180 25; $btnOpenLocal.Add_Click({ Invoke-Item $LocalConfigPath }); $form.Controls.Add($btnOpenLocal)
@@ -880,7 +853,6 @@ Function Show-ConfigWindow {
         $rbKillExit.Checked = $true
         $txtCheck.Text = "5"; $chkStartup.Checked = $true; $chkArchive.Checked = $true
         $chkPurge.Checked = $false; $cmbPurge.SelectedItem = "Weekly"
-        $chkAutoUpdate.Checked = $true; $cmbUpdate.SelectedItem = "Daily"
         $chkApi.Checked = $true; $chkAllowMonitorApi.Checked = $true
         $chkAutoRestart.Checked = $false; $txtAutoRestart.Text = "15"
         $chkLogging.Checked = $false
@@ -923,8 +895,6 @@ Function Show-ConfigWindow {
         $monitorData.timeStep = $tStep
         $monitorData.additionalArgs = $txtArgs.Text
         $monitorData.killCondition = $newKillCondition
-        $monitorData.autoUpdate = $chkAutoUpdate.Checked
-        $monitorData.updateInterval = $cmbUpdate.SelectedItem
         $monitorData.autoArchive = $chkArchive.Checked
         $monitorData.autoPurge = $chkPurge.Checked
         $monitorData.purgeInterval = $cmbPurge.SelectedItem
@@ -1060,6 +1030,7 @@ $MenuItemExit.Text = "Exit"
 $MenuItemExit.Add_Click({
     Write-MonitorLog "Monitor exited by user"
     $MonitorTimer.Stop()
+    if ($MigrationTimer) { $MigrationTimer.Stop() }
     $NotifyIcon.Visible = $false
     Save-PortMap
     [System.Windows.Forms.Application]::Exit()
@@ -1082,6 +1053,7 @@ $NotifyIcon.Add_MouseClick({
 })
 
 $NotifyIcon.Add_DoubleClick({
+    if ($Global:MigrationInProgress) { return }
     $MonitorTimer.Stop()
     Show-ConfigWindow
     $MonitorTimer.Start()
@@ -1159,11 +1131,6 @@ $MonitorAction = {
     $currentDay = $now.DayOfYear
     if ($Global:LastLogMaintenanceDay -ne $currentDay) {
         Invoke-LogMaintenance
-        if (Test-ShouldRunAutoUpdate -configObj $config -now $now) {
-            Test-ForUpdates -ManualCheck $false
-            $config.lastUpdateCheckDate = $now.ToString("o")
-            Save-MonitorConfig $config
-        }
         $Global:LastLogMaintenanceDay = $currentDay
     }
 
@@ -1180,6 +1147,12 @@ $MonitorAction = {
             $Global:PortMap.Remove($pidKey) 
             $Global:NotifiedPids.Remove($pidKey)
         }
+    }
+
+    # Migration: once every instance has shut down, the monitor exits on its own
+    if ($Global:MigrationInProgress -and $runningCount -eq 0) {
+        Complete-Migration
+        return
     }
 
     $canSoftShutdown = ($config.enableApi -and $config.allowMonitorApi)
@@ -1295,6 +1268,7 @@ $MonitorAction = {
             }
 
             # 3. Soft Shutdown Evaluation & Idle Auto-Restart
+            if ($Global:MigrationInProgress -and -not $pData.ShutdownQueued) { $pData.ShutdownQueued = $true }
             if ($pData.ModeTitle -eq "Idle") {
                 if ($pData.PreviousMode -ne "Idle") {
                     $pData.LastIdleStart = $now
@@ -1321,7 +1295,10 @@ $MonitorAction = {
         }
     }
     
-    if ($canSoftShutdown) { $MenuItemStatus.Text = "Active: $runningCount / $($config.amountOfInstances) (Click Instance to Queue Shutdown)" } 
+    if ($Global:MigrationInProgress) {
+        $migNote = if ($canSoftShutdown) { "" } else { " - soft shutdown unavailable, close them manually" }
+        $MenuItemStatus.Text = "Migrating: waiting for $runningCount instance(s) to shut down$migNote"
+    } elseif ($canSoftShutdown) { $MenuItemStatus.Text = "Active: $runningCount / $($config.amountOfInstances) (Click Instance to Queue Shutdown)" }
     else { $MenuItemStatus.Text = "Active: $runningCount / $($config.amountOfInstances) (Allow API Usage for Soft Shutdowns)" }
 
     $sepIndex = $ContextMenuStrip.Items.IndexOf($MenuItemSeparator1)
@@ -1381,27 +1358,14 @@ $MonitorAction = {
                     $item.Enabled = $false
                 }
                 
+                if ($Global:MigrationInProgress) { $item.Enabled = $false }
                 $ContextMenuStrip.Items.Insert($pIndex, $item)
                 $pIndex++
             } catch { }
         }
     }
 
-    if ($Global:PendingSilentDLLUpdate -and $runningCount -eq 0) {
-        try {
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri "$dllURL/pnsradgameserver.dll" -OutFile $Script:Path_PNSRAD
-            Invoke-WebRequest -Uri "$dllURL/dbgcore.dll" -OutFile $Script:Path_DBGCORE
-        } catch { }
-
-        $Global:PendingSilentDLLUpdate = $false
-        $conf = Get-MonitorConfig; $conf.pauseSpawning = $Global:SilentUpdatePreviousPauseState; Save-MonitorConfig $conf
-        $config = Get-MonitorConfig 
-
-        if ($Global:PendingMonitorUpdateUrl) { Invoke-MonitorUpdate -downloadUrl $Global:PendingMonitorUpdateUrl }
-    }
-
-    if (-not $config.pauseSpawning) {
+    if (-not $config.pauseSpawning -and -not $Global:MigrationInProgress) {
         $needed = $config.amountOfInstances - $runningCount
         if ($needed -gt 0) {
             $freshConfig = Get-MonitorConfig
@@ -1441,168 +1405,330 @@ $MonitorAction = {
 $MonitorTimer.Add_Tick($MonitorAction)
 
 # ==============================================================================
-# 11. UPDATE LOGIC (Monitor + DLLs)
+# 11. MIGRATION TO THE COMMUNITY LAUNCHER
 # ==============================================================================
 
-Function Test-FileHash ($path, $targetHash) {
-    if (-not (Test-Path $path)) { return $false }
-    $hash = Get-FileHash -Path $path -Algorithm MD5
-    return ($hash.Hash -eq $targetHash)
+# Helper script template. When migration starts it is written to %TEMP% under a random name.
+# One file serves both stages (each stage runs as its own separate process):
+#   -Stage Dialog  : shows the "Instances are preparing for shutdown" dialog, then launches the cleanup stage
+#   -Stage Cleanup : runs in its own terminal window, waits for echovr + the monitor to exit, deletes files,
+#                    and deletes this script file itself (so nothing is left behind)
+$Script:MigrationHelperTemplate = @'
+param([string]$Stage = 'Dialog', [switch]$DeleteAll)
+
+$ErrorActionPreference = 'SilentlyContinue'
+$root       = '__ROOT__'
+$monitorPid = __MONPID__
+$guideUrl   = '__URL__'
+Set-Location -LiteralPath $env:TEMP
+
+# ------------------------------------------------------------ Stage 1: dialog
+if ($Stage -eq 'Dialog') {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'EchoVR Server Monitor - Migration'
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.ControlBox = $false
+    $form.TopMost = $true
+    $form.ClientSize = New-Object System.Drawing.Size(420, 150)
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = 'Instances are preparing for shutdown. Click OK to open the community launcher setup guide.'
+    $lbl.Location = New-Object System.Drawing.Point(20, 20)
+    $lbl.Size = New-Object System.Drawing.Size(380, 40)
+    $form.Controls.Add($lbl)
+
+    $chk = New-Object System.Windows.Forms.CheckBox
+    $chk.Text = 'Delete my ready-at-dawn-echo-arena folder'
+    $chk.Location = New-Object System.Drawing.Point(20, 70)
+    $chk.Size = New-Object System.Drawing.Size(380, 24)
+    $chk.Checked = $false
+    $form.Controls.Add($chk)
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.Location = New-Object System.Drawing.Point(310, 105)
+    $ok.Size = New-Object System.Drawing.Size(90, 28)
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $form.Controls.Add($ok)
+    $form.AcceptButton = $ok
+
+    [void]$form.ShowDialog()
+    $wipe = $chk.Checked
+    $form.Dispose()
+
+    Start-Process $guideUrl
+
+    # Hand off to a separate process in a new terminal window
+    $cleanupArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Stage Cleanup"
+    if ($wipe) { $cleanupArgs += ' -DeleteAll' }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $cleanupArgs -WorkingDirectory $env:TEMP -WindowStyle Normal
+    exit
 }
 
-Function Update-DLLs ($Silent = $false) {
-    $rawBaseUrl = $dllURL
-    $urlPNSRAD = "$rawBaseUrl/pnsradgameserver.dll"
-    $urlDBG    = "$rawBaseUrl/dbgcore.dll"
+# ------------------------------------------------------------ Stage 2: cleanup
+# PowerShell has already read this file completely, so it is safe to remove it right away
+Remove-Item -LiteralPath $PSCommandPath -Force
 
-    $running = Get-Process -Name $Script:EchoProcessName -ErrorAction SilentlyContinue
-    if ($running) {
-        if ($Silent) { 
-            $conf = Get-MonitorConfig; $Global:SilentUpdatePreviousPauseState = $conf.pauseSpawning; $conf.pauseSpawning = $true; Save-MonitorConfig $conf
-            foreach ($k in $Global:PortMap.Keys) {
-                if ($conf.enableApi -and $conf.allowMonitorApi) { $Global:PortMap[$k].ShutdownQueued = $true } 
-                else { Stop-Process -Id $k -Force -ErrorAction SilentlyContinue }
-            }
-            $Global:PendingSilentDLLUpdate = $true
-            return $false 
-        }
-        
-        $conf = Get-MonitorConfig; $conf.pauseSpawning = $true; Save-MonitorConfig $conf
-        
-        $msg = "Cannot update DLLs while instances are running.`n`nSpawning has been PAUSED.`nPlease manually close all EchoVR instances now, then click OK to proceed."
-        $res = [System.Windows.Forms.MessageBox]::Show($msg, "Action Required", [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Warning)
-        
-        if ($res -eq [System.Windows.Forms.DialogResult]::Cancel) { return $false }
-        
-        $running = Get-Process -Name $Script:EchoProcessName -ErrorAction SilentlyContinue
-        if ($running) {
-             [System.Windows.Forms.MessageBox]::Show("Instances are still running. Update aborted.", "Aborted", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-             return $false
-        }
-    }
+$Host.UI.RawUI.WindowTitle = 'EchoVR Server Monitor - Migration Cleanup'
+$wipe = $DeleteAll.IsPresent
+# Never wipe a drive root, fall back to the targeted cleanup instead
+if ($wipe -and $root.TrimEnd('\').Length -le 3) { $wipe = $false }
 
-    try {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $urlPNSRAD -OutFile $Script:Path_PNSRAD
-        Invoke-WebRequest -Uri $urlDBG -OutFile $Script:Path_DBGCORE
-        if (-not $Silent) { [System.Windows.Forms.MessageBox]::Show("DLLs updated successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
-        return $true
-    } catch {
-        if (-not $Silent) { [System.Windows.Forms.MessageBox]::Show("Failed to download DLLs. Check internet or repo path.`nError: $_", "Download Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) }
-        return $false
-    }
+$monitorName = (Get-Process -Id $monitorPid).ProcessName
+function Test-MonitorAlive {
+    if (-not $monitorName) { return $false }
+    $p = Get-Process -Id $monitorPid
+    return ($null -ne $p -and $p.ProcessName -eq $monitorName)
 }
 
-Function Test-ForUpdates ($ManualCheck = $false) {
-    $apiUrl = $releasesURL
-    $TargetFileName = if ($Global:IsBinary) { "EchoVR-Server-Monitor.exe" } else { "EchoVR-Server-Monitor.ps1" }
-    
-    $monitorUpdateAvailable = $false; $monitorAssetUrl = $null; $dllUpdateAvailable = $false
+function Show-Status([string]$text) { Clear-Host; Write-Host $text }
 
-    try {
-        if ($ManualCheck) { [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor }
+Show-Status 'Waiting for servers to shut down... (Press ENTER to kill processes now)'
+while ((Get-Process -Name echovr) -or (Test-MonitorAlive)) {
+    if ([Console]::KeyAvailable) {
+        $key = [Console]::ReadKey($true)
+        if ($key.Key -eq 'Enter') {
+            Get-Process -Name echovr | Stop-Process -Force
+            if (Test-MonitorAlive) { Stop-Process -Id $monitorPid -Force }
+            break
+        }
+    }
+    Start-Sleep -Milliseconds 250
+}
+Start-Sleep -Seconds 2   # let file handles release
+
+Show-Status 'Cleaning up...'
+if ($wipe) {
+    $targets = @($root)
+} else {
+    $targets = @((Join-Path $root 'Launch-Monitor.bat'), (Join-Path $root 'dashboard'), (Join-Path $root 'combatGunPatchFiles'))
+}
+
+$remaining = @()
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+    foreach ($t in $targets) {
+        if (Test-Path -LiteralPath $t) { Remove-Item -LiteralPath $t -Recurse -Force }
+    }
+    $remaining = @($targets | Where-Object { Test-Path -LiteralPath $_ })
+    if ($remaining.Count -eq 0) { break }
+    Start-Sleep -Seconds 2
+}
+
+if ($remaining.Count -eq 0) {
+    Show-Status 'Finished! Exiting in 5 seconds...'
+    Start-Sleep -Seconds 5
+} else {
+    Show-Status ("Some files could not be deleted (they may be in use). Please delete them manually:`n" + ($remaining -join "`n") + "`n`nExiting in 10 seconds...")
+    Start-Sleep -Seconds 10
+}
+exit
+'@
+
+# --- Persistent prompt state (own file, so the settings window can never overwrite it with stale data) ---
+Function Get-MigrationState {
+    $state = @{ dismissed = $false; remindAt = $null }
+    if (Test-Path -LiteralPath $Script:MigrationFile) {
         try {
-            $headers = @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" }
-            $response = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers -ErrorAction Stop
-            $monitorAsset = $response.assets | Where-Object { $_.name -eq $TargetFileName } | Select-Object -First 1
-            if ($monitorAsset) {
-                $latestTag = $response.tag_name -replace "^v", ""
-                $currentVer = $Global:Version -replace "^v", ""
-                if ([System.Version]$latestTag -gt [System.Version]$currentVer) { $monitorUpdateAvailable = $true; $monitorAssetUrl = $monitorAsset.browser_download_url }
+            $raw = Get-Content -LiteralPath $Script:MigrationFile -Raw -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $obj = $raw | ConvertFrom-Json
+                if ($null -ne $obj.dismissed) { $state.dismissed = [bool]$obj.dismissed }
+                if ($null -ne $obj.remindAt) { $state.remindAt = [datetime]$obj.remindAt }
             }
-        } catch { if ($ManualCheck) { Write-Warning "Could not connect to GitHub API." } }
+        } catch { }
+    }
+    return $state
+}
 
-        $pnsradValid = Test-FileHash $Script:Path_PNSRAD $Global:Hash_PNSRAD
-        $dbgValid = Test-FileHash $Script:Path_DBGCORE $Global:Hash_DBGCORE
-        if (-not $pnsradValid -or -not $dbgValid) { $dllUpdateAvailable = $true }
+Function Set-MigrationState ([bool]$dismissed, $remindAt) {
+    try {
+        if (-not (Test-Path -LiteralPath $Script:DashboardDir)) { New-Item -ItemType Directory -Path $Script:DashboardDir -Force | Out-Null }
+        $remindStr = $null
+        if ($null -ne $remindAt) { $remindStr = ([datetime]$remindAt).ToString("o") }
+        @{ dismissed = $dismissed; remindAt = $remindStr } | ConvertTo-Json | Set-Content -LiteralPath $Script:MigrationFile -Force
+    } catch { }
+}
 
-        if ($monitorUpdateAvailable -and $dllUpdateAvailable) {
-            if ($ManualCheck) {
-                $msg = "Updates Available:`n`n1. New Monitor Version ($($response.tag_name))`n2. New Server DLLs (Hash Mismatch)`n`nUpdate all components now?"
-                $res = [System.Windows.Forms.MessageBox]::Show($msg, "Critical Updates Found", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Exclamation)
-                if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { if (Update-DLLs) { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl } }
-            } else {
-                $Global:PendingMonitorUpdateUrl = $monitorAssetUrl
-                if (Update-DLLs -Silent $true) { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl }
-            }
-            return
-        }
+Function Test-MigrationPromptDue {
+    $state = Get-MigrationState
+    if ($state.dismissed) { return $false }
+    if ($null -eq $state.remindAt) { return $true }
+    return ((Get-Date) -ge $state.remindAt)
+}
 
-        if ($monitorUpdateAvailable) {
-            if ($ManualCheck) {
-                $msg = "New Monitor Version Available: $($response.tag_name)`n`nUpdate now?"
-                $res = [System.Windows.Forms.MessageBox]::Show($msg, "Monitor Update", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-                if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl }
-            } else { Invoke-MonitorUpdate -downloadUrl $monitorAssetUrl }
-            return
-        }
+# --- The three-button migration popup. Returns "Migrate", "Later", "Never" (or "Busy" if one is already open) ---
+Function Show-MigrationPopup {
+    param($Owner = $null)
 
-        if ($dllUpdateAvailable) {
-            if ($ManualCheck) {
-                $msg = "Your local server DLLs do not match the required versions.`n`nUpdate pnsradgameserver.dll and dbgcore.dll now?"
-                $res = [System.Windows.Forms.MessageBox]::Show($msg, "DLL Integrity Check", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-                if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { Update-DLLs }
-            } else { Update-DLLs -Silent $true }
-            return
-        }
-        if ($ManualCheck) { [System.Windows.Forms.MessageBox]::Show("Everything is up to date.`n`nMonitor: v$($Global:Version)`nDLLs: Verified", "Up to Date", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) }
-    } catch {
-        if ($ManualCheck) { [System.Windows.Forms.MessageBox]::Show("Update check failed: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) }
+    if ($Global:MigrationPopupOpen) { return "Busy" }
+    $Global:MigrationPopupOpen = $true
+    $dlg = $null
+    try {
+        $conf = Get-MonitorConfig
+        $tf = $conf.touchFriendly
+        $k = if ($tf) { 1.25 } else { 1 }
+
+        $dlg = New-Object System.Windows.Forms.Form
+        $dlg.Text = "EchoVR Server Monitor - Deprecated"
+        $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $dlg.MaximizeBox = $false
+        $dlg.MinimizeBox = $false
+        $dlg.TopMost = $true
+        if ($null -ne $Owner) { $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent }
+        else { $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen }
+        if ($tf) { $dlg.Font = New-Object System.Drawing.Font("Segoe UI", 11) }
+        $dlg.ClientSize = New-Object System.Drawing.Size([int](460 * $k), [int](180 * $k))
+
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = "The PowerShell monitor has been deprecated as of October 30, 2026 in favor of the new community launcher. Would you like to migrate now?`n`nYou can also begin migration at any time from the About tab."
+        $lbl.Location = New-Object System.Drawing.Point([int](20 * $k), [int](20 * $k))
+        $lbl.Size = New-Object System.Drawing.Size([int](420 * $k), [int](100 * $k))
+        $dlg.Controls.Add($lbl)
+
+        $btnMigrate = New-Object System.Windows.Forms.Button
+        $btnMigrate.Text = "Migrate Now"
+        $btnMigrate.Location = New-Object System.Drawing.Point([int](20 * $k), [int](135 * $k))
+        $btnMigrate.Size = New-Object System.Drawing.Size([int](130 * $k), [int](30 * $k))
+        $btnMigrate.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+        $dlg.Controls.Add($btnMigrate)
+
+        $btnLater = New-Object System.Windows.Forms.Button
+        $btnLater.Text = "Remind Me Later"
+        $btnLater.Location = New-Object System.Drawing.Point([int](165 * $k), [int](135 * $k))
+        $btnLater.Size = New-Object System.Drawing.Size([int](130 * $k), [int](30 * $k))
+        $btnLater.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+        $dlg.Controls.Add($btnLater)
+
+        $btnNever = New-Object System.Windows.Forms.Button
+        $btnNever.Text = "Don't Ask Again"
+        $btnNever.Location = New-Object System.Drawing.Point([int](310 * $k), [int](135 * $k))
+        $btnNever.Size = New-Object System.Drawing.Size([int](130 * $k), [int](30 * $k))
+        $btnNever.DialogResult = [System.Windows.Forms.DialogResult]::Ignore
+        $dlg.Controls.Add($btnNever)
+
+        # Enter / Esc / the X button all mean "Remind Me Later" so nothing destructive can happen by accident
+        $dlg.AcceptButton = $btnLater
+        $dlg.CancelButton = $btnLater
+
+        if ($null -ne $Owner) { $res = $dlg.ShowDialog($Owner) } else { $res = $dlg.ShowDialog() }
+
+        if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { return "Migrate" }
+        if ($res -eq [System.Windows.Forms.DialogResult]::Ignore) { return "Never" }
+        return "Later"
     } finally {
-        if ($ManualCheck) { [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default }
+        $Global:MigrationPopupOpen = $false
+        if ($null -ne $dlg) { $dlg.Dispose() }
     }
 }
 
-Function Invoke-MonitorUpdate ($downloadUrl) {
-    try {
-        Write-MonitorLog "Monitor exited by update"
-        Save-PortMap
-        $currentFile = $Global:ExecutionPath
-        $currentDir = [System.IO.Path]::GetDirectoryName($currentFile)
-        $newFileName = if ($Global:IsBinary) { "EchoMonitor_New.exe" } else { "EchoMonitor_New.ps1" }
-        $newFilePath = Join-Path $currentDir $newFileName
-        $dashboardDir = Join-Path $currentDir "dashboard"
-        $batchPath = Join-Path $dashboardDir "updater.bat"
+# Shows the popup and acts on the answer. Returns the choice.
+Function Invoke-MigrationPrompt {
+    param($Owner = $null)
 
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $newFilePath
-
-        $exePath = if (Get-Command "pwsh" -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
-        $startCommand = if ($Global:IsBinary) { "start `"`" `"$currentFile`"" } else { "start `"`" $exePath -WindowStyle Hidden -File `"$currentFile`"" }
-        
-        $batchContent = @"
-@echo off
-timeout /t 3 /nobreak > NUL
-:LOOP
-del "$currentFile"
-if exist "$currentFile" goto LOOP
-move /y "$newFilePath" "$currentFile"
-$startCommand
-del "%~f0"
-"@
-        Set-Content -Path $batchPath -Value $batchContent
-        $NotifyIcon.ShowBalloonTip(4000, "Monitor Update", "New version downloaded! Restarting to apply updates...", [System.Windows.Forms.ToolTipIcon]::Info)
-        Start-Sleep -Seconds 3
-
-        Start-Process -FilePath $batchPath -WindowStyle Hidden
-        $NotifyIcon.Visible = $false
-        [System.Windows.Forms.Application]::Exit()
-        Stop-Process -Id $PID -Force
-    } catch { [System.Windows.Forms.MessageBox]::Show("Update failed: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) }
+    $choice = Show-MigrationPopup -Owner $Owner
+    if ($choice -eq "Migrate") {
+        Write-MonitorLog "Migration prompt: Migrate Now selected"
+        $null = Start-Migration
+    } elseif ($choice -eq "Never") {
+        Set-MigrationState $true $null
+        Write-MonitorLog "Migration prompt: Don't Ask Again selected"
+    } elseif ($choice -eq "Later") {
+        $remindAt = (Get-Date).AddHours(24)
+        Set-MigrationState $false $remindAt
+        Write-MonitorLog "Migration prompt: Remind Me Later selected (next prompt after $($remindAt.ToString('MM-dd-yyyy HH:mm:ss')))"
+    }
+    return $choice
 }
+
+# Launches the migration helper (stage 1: dialog) as a separate, hidden process
+Function Start-MigrationDialogProcess {
+    $tempDir = [System.IO.Path]::GetTempPath()
+    $rootEsc = $Script:ScriptRoot.Replace("'", "''")
+    $urlEsc = $Script:MigrationGuideURL.Replace("'", "''")
+    $helperText = $Script:MigrationHelperTemplate.Replace('__ROOT__', $rootEsc).Replace('__MONPID__', [string]$PID).Replace('__URL__', $urlEsc)
+
+    $helperPath = Join-Path $tempDir ("evr-migrate-" + [guid]::NewGuid().ToString("N") + ".ps1")
+    # UTF-8 with BOM so Windows PowerShell 5.1 reads non-ASCII folder names correctly
+    [System.IO.File]::WriteAllText($helperPath, $helperText, (New-Object System.Text.UTF8Encoding($true)))
+
+    # WorkingDirectory must NOT be the echo folder, or the helper would block that folder from being deleted
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$helperPath`" -Stage Dialog" -WindowStyle Hidden -WorkingDirectory $tempDir
+}
+
+# Migrate Now: pause spawning, queue every instance for shutdown, remove the startup shortcut, open the helper dialog
+Function Start-Migration {
+    if ($Global:MigrationInProgress) { return }
+    $Global:MigrationInProgress = $true
+    Write-MonitorLog "Migration started"
+
+    # 1. Pause server spawning (also enforced by the monitor loop while migration is in progress)
+    try { $conf = Get-MonitorConfig; $conf.pauseSpawning = $true; Save-MonitorConfig $conf } catch { }
+    $MenuItemPause.Checked = $true
+    $MenuItemPause.Enabled = $false
+    $MenuItemConfig.Enabled = $false
+
+    # 2. Queue all instances for shutdown (soft shutdown: each one closes once it is idle)
+    foreach ($procId in @($Global:PortMap.Keys)) {
+        $Global:PortMap[$procId].ShutdownQueued = $true
+        Write-MonitorLog "Instance queued for shutdown (migration)" -ProcId $procId -pData $Global:PortMap[$procId]
+    }
+
+    # 3. Remove the startup shortcut
+    try {
+        if (Test-Path -LiteralPath $Script:ShortcutPath) { Remove-Item -LiteralPath $Script:ShortcutPath -Force -ErrorAction Stop }
+    } catch { Write-MonitorLog "Failed to remove startup shortcut: $_" }
+
+    # 4. Open the migration dialog in a new process (it outlives this monitor)
+    try {
+        Start-MigrationDialogProcess
+    } catch {
+        Write-MonitorLog "Failed to launch migration dialog: $_"
+        [System.Windows.Forms.MessageBox]::Show("Could not open the migration helper ($_).`n`nInstances are still being shut down. Click OK to open the community launcher setup guide.", "Migration", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        Start-Process $Script:MigrationGuideURL
+    }
+}
+
+# Called from the monitor loop once every instance has shut down
+Function Complete-Migration {
+    Write-MonitorLog "Migration: all instances shut down, monitor exiting"
+    $MonitorTimer.Stop()
+    $MigrationTimer.Stop()
+    $NotifyIcon.Visible = $false
+    [System.Windows.Forms.Application]::Exit()
+}
+
+# Launch popup + 24h reminders. First check runs shortly after launch, then once a minute.
+$MigrationTimer = New-Object System.Windows.Forms.Timer
+$MigrationTimer.Interval = 1500
+
+$MigrationTimerAction = {
+    $MigrationTimer.Stop()
+    try {
+        $configOpen = ($null -ne $Global:ConfigForm -and -not $Global:ConfigForm.IsDisposed)
+        if (-not $Global:MigrationInProgress -and -not $Global:MigrationPopupOpen -and -not $configOpen) {
+            if (Test-MigrationPromptDue) { $null = Invoke-MigrationPrompt }
+        }
+    } catch { }
+    finally {
+        if (-not $Global:MigrationInProgress) { $MigrationTimer.Interval = 60000; $MigrationTimer.Start() }
+    }
+}
+$MigrationTimer.Add_Tick($MigrationTimerAction)
 
 # ==============================================================================
 # 12. EXECUTION
 # ==============================================================================
 
 try {
-    if (Test-ShouldRunAutoUpdate -configObj $initConfig) {
-        Test-ForUpdates -ManualCheck $false
-        $initConfig.lastUpdateCheckDate = (Get-Date).ToString("o")
-        Save-MonitorConfig $initConfig
-    }
-
     $MonitorTimer.Start()
+    $MigrationTimer.Start()
     [System.Windows.Forms.Application]::Run()
 } finally {
     if ($null -ne $mutex) {
