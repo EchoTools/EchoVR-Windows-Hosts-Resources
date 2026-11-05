@@ -2,7 +2,7 @@
 Beginning Oct. 30th 2026, Windows hosts are asked to host instances via the new [Echo VR Launcher](https://github.com/marshmallow-mia/EchoVR_Launcher).<br>
 ## Download the launcher and follow these steps to get started:
 1. Download the game (or point it to your echo folder) from the `Install` tab on the sidebar.<br>Select `Flat` for your installation type.
-2. In the `Settings` menu, ensure all launcher and update options are checked.<br>In `Advanced Settings`, enter the following dev code: ```xnzi2zclrlv2lgqy5zrkev2qxg```<br>
+2. In the `Settings` menu, ensure all launcher and update options are checked.<br>
 <br><img width="475" height="520" alt="{07E79B24-92DB-4DA3-941C-9E2FDDDE8C27}" src="https://github.com/user-attachments/assets/6ea7bbf3-1604-47a2-807d-ed2e11fe238c" /><br>
 3. Under `Community`, click on `EchoVRCE` and sign in with your discord account.
 4. Under `Plugins`, install the `Server Host` plugin, then click `Open` on the host plugin. Enter the number of instances you want to host in the field at the top, then click `Add.`<br>
